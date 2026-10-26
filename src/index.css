@@ -1,0 +1,143 @@
+@import "tailwindcss";
+
+@layer base {
+  body {
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+  }
+  
+  .font-mono, [data-tabular] {
+    font-family: 'JetBrains Mono', monospace;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .order-preview-viewport,
+  .order-preview-stage,
+  .order-document-preview,
+  .order-document-preview .print-page {
+    box-sizing: border-box;
+  }
+
+  .order-preview-viewport {
+    width: 100%;
+    min-width: 0;
+    max-height: 72vh;
+    overflow: auto;
+    overscroll-behavior: contain;
+  }
+
+  .order-preview-stage {
+    width: 794px;
+    margin-inline: auto;
+  }
+
+  .order-document-preview {
+    width: 794px;
+    max-width: none;
+    margin-inline: 0;
+  }
+
+  .order-document-preview .print-page {
+    width: 100%;
+  }
+}
+
+/* Custom scrollbars for data tables */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.12);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.22);
+}
+
+/* Bulletproof Print Media Styles for A4 Form Order Sublime */
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 8mm 6mm;
+  }
+
+  html, body {
+    background: #ffffff !important;
+    color: #000000 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    width: 100% !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  /* Hide everything in #root */
+  #root {
+    display: none !important;
+  }
+
+  /* Show only #print-root */
+  #print-root {
+    display: block !important;
+    position: absolute !important;
+    left: 0 !important;
+    top: 0 !important;
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: #ffffff !important;
+    color: #000000 !important;
+    z-index: 999999 !important;
+  }
+
+  .print-document {
+    display: block !important;
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  .print-page {
+    width: 100% !important;
+    min-height: auto !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    box-shadow: none !important;
+    page-break-after: always;
+    break-after: page;
+    background: #ffffff !important;
+  }
+
+  .print-page:last-child {
+    page-break-after: avoid;
+    break-after: avoid;
+  }
+
+  thead {
+    display: table-header-group !important;
+  }
+
+  tbody {
+    display: table-row-group !important;
+  }
+
+  tr {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+
+  .page-break-avoid {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+
+  /* Ensure images print with full clarity and contrast */
+  img {
+    max-width: 100% !important;
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+}

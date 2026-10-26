@@ -1,0 +1,6 @@
+{
+  "name": "myprintin admin",
+  "description": "Production administration and invoice management system for sublimation printing, jersey apparel, and custom manufacturing.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
