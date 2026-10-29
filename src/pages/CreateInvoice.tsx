@@ -24,6 +24,8 @@ import { OrderSummaryBar } from '../components/invoice/OrderSummaryBar';
 import { InvoicePreviewA4 } from '../components/invoice/InvoicePreviewA4';
 import { ImportCsvModal } from '../components/invoice/ImportCsvModal';
 import { ConfirmModal } from '../components/common/ConfirmModal';
+import { SalesOrderFields } from '../components/order/SalesOrderFields';
+import { useMasterData } from '../hooks/useMasterData';
 import { 
   CheckCircle2, 
   HelpCircle, 
@@ -58,6 +60,9 @@ export const CreateInvoice: React.FC<CreateInvoiceProps> = ({
   const [isFullscreenPreviewOpen, setIsFullscreenPreviewOpen] = useState(false);
   const [validationErrors, setValidationErrors] = useState<Record<string, string>>({});
   const [saveAndPrintPending, setSaveAndPrintPending] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const masterData = useMasterData();
 
   // Initialize Default Order State
   const createDefaultOrder = (): Order => {
@@ -67,6 +72,8 @@ export const CreateInvoice: React.FC<CreateInvoiceProps> = ({
     return {
       id: generateUuid(),
       orderNumber: newOrderNum,
+      salesChannel: 'Offline',
+      externalOrderNumber: '',
       customer: {
         name: '',
         phone: '',
@@ -186,8 +193,28 @@ export const CreateInvoice: React.FC<CreateInvoiceProps> = ({
     if (!order.customer.phone.trim()) {
       errors.phone = 'Nomor telepon/WA wajib diisi';
     }
+    if (!order.externalOrderNumber?.trim()) {
+      errors.externalOrderNumber = 'Nomor pesanan wajib diisi';
+    }
     if (!order.product.material.trim()) {
       errors.material = 'Jenis bahan wajib dipilih';
+    }
+    if (!initialOrder) {
+      if (masterData.isLoading) errors.masterData = 'Data master sedang dimuat. Coba simpan kembali sebentar lagi.';
+      else if (masterData.error) errors.masterData = masterData.error;
+      else {
+        if (!masterData.data.product_types.some(item => item.isActive && item.name === order.product.productType)) {
+          errors.productType = 'Pilih jenis produk aktif dari Data Master.';
+        }
+        if (!masterData.data.materials.some(item => item.isActive && item.name === order.product.material)) {
+          errors.material = 'Pilih jenis bahan aktif dari Data Master.';
+        }
+        if (order.players.some(player => !masterData.data.jersey_sizes.some(
+          size => size.isActive && (size.code === player.size || size.name === player.size),
+        ))) {
+          errors.playerSizes = 'Roster berisi ukuran nonaktif atau belum terdaftar. Perbarui data ukuran sebelum menyimpan order baru.';
+        }
+      }
     }
     if (!order.product.totalQuantity || order.product.totalQuantity <= 0) {
       errors.totalQuantity = 'Jumlah total pesanan minimal 1 pcs';
@@ -205,12 +232,15 @@ export const CreateInvoice: React.FC<CreateInvoiceProps> = ({
   };
 
   const handleRequestSave = (andPrint: boolean = false) => {
+    if (isSaving) return;
     if (!validateForm()) return;
+    setSaveError(null);
     setSaveAndPrintPending(andPrint);
     setIsConfirmModalOpen(true);
   };
 
-  const handleConfirmSave = () => {
+  const handleConfirmSave = async () => {
+    if (isSaving) return;
     const finalOrder: Order = {
       ...order,
       customer: {
@@ -220,9 +250,16 @@ export const CreateInvoice: React.FC<CreateInvoiceProps> = ({
       updatedAt: new Date().toISOString(),
     };
 
-    storageService.saveOrder(finalOrder);
-    setIsConfirmModalOpen(false);
-    onSaved(finalOrder, saveAndPrintPending);
+    setIsSaving(true);
+    setSaveError(null);
+    try {
+      await onSaved(finalOrder, saveAndPrintPending);
+      setIsConfirmModalOpen(false);
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : 'Pesanan gagal disimpan ke Supabase.');
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   // CSV Import handler
@@ -375,6 +412,23 @@ export const CreateInvoice: React.FC<CreateInvoiceProps> = ({
               onChange={newCust => setOrder(prev => ({ ...prev, customer: newCust, orderNumber: newCust.orderNumber }))}
               errors={validationErrors as any}
             />
+            <div className="mt-4 rounded-2xl border border-neutral-200 bg-white p-5 sm:p-6">
+              <SalesOrderFields
+                salesChannel={order.salesChannel}
+                externalOrderNumber={order.externalOrderNumber}
+                onChange={(salesChannel, externalOrderNumber) => setOrder(prev => ({
+                  ...prev,
+                  salesChannel,
+                  externalOrderNumber,
+                }))}
+              />
+              {validationErrors.externalOrderNumber && (
+                <p className="mt-1 text-[11px] text-red-600">{validationErrors.externalOrderNumber}</p>
+              )}
+              {validationErrors.masterData && (
+                <p className="mt-1 text-[11px] text-red-600">{validationErrors.masterData}</p>
+              )}
+            </div>
           </div>
 
           {/* Section 2: Detail Produk & Bahan */}
@@ -383,12 +437,14 @@ export const CreateInvoice: React.FC<CreateInvoiceProps> = ({
               product={order.product}
               onChange={newProd => setOrder(prev => ({ ...prev, product: newProd }))}
               errors={validationErrors as any}
+              preserveLegacyValues={Boolean(initialOrder)}
             />
           </div>
 
           {/* Section 3: Upload Desain */}
           <div id="step-3">
             <DesignUploader
+              orderId={order.id}
               designs={order.designs}
               onChange={newDesigns => setOrder(prev => ({ ...prev, designs: newDesigns }))}
               materialName={order.product.material}
@@ -397,6 +453,9 @@ export const CreateInvoice: React.FC<CreateInvoiceProps> = ({
 
           {/* Section 4: Data Pemain & Detail Ukuran */}
           <div id="step-4">
+            {validationErrors.playerSizes && (
+              <p className="mb-2 rounded-xl border border-red-200 bg-red-50 p-3 text-xs text-red-700">{validationErrors.playerSizes}</p>
+            )}
             <PlayerTable
               players={order.players}
               onChange={newPlayers => setOrder(prev => ({ ...prev, players: newPlayers }))}
@@ -405,6 +464,7 @@ export const CreateInvoice: React.FC<CreateInvoiceProps> = ({
               defaultSleeve={order.product.sleeve}
               onOpenImportCsv={() => setIsCsvModalOpen(true)}
               orderNumber={order.orderNumber}
+              preserveLegacySizes={Boolean(initialOrder)}
             />
           </div>
 
@@ -419,8 +479,10 @@ export const CreateInvoice: React.FC<CreateInvoiceProps> = ({
           {/* Section 6: Model Kerah */}
           <div id="step-6">
             <CollarForm
+              orderId={order.id}
               collar={order.collar}
               onChange={newCollar => setOrder(prev => ({ ...prev, collar: newCollar }))}
+              preserveLegacyValues={Boolean(initialOrder)}
             />
           </div>
 
@@ -493,8 +555,11 @@ export const CreateInvoice: React.FC<CreateInvoiceProps> = ({
         cancelText="Kembali Edit"
         onConfirm={handleConfirmSave}
         onCancel={() => setIsConfirmModalOpen(false)}
+        isProcessing={isSaving}
+        processingText="Menyimpan..."
       >
         <div className="space-y-3 font-sans text-xs">
+          {saveError && <p className="rounded-xl border border-red-200 bg-red-50 p-3 text-red-700" role="alert">{saveError}</p>}
           <div className="grid grid-cols-2 gap-2 p-3 rounded-xl bg-neutral-50 border border-neutral-200">
             <div>
               <span className="text-neutral-400 block text-[10px] uppercase font-bold">Pemesan</span>

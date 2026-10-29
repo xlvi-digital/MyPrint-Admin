@@ -27,7 +27,8 @@ import {
   ExternalLink,
   Sliders,
   ChevronRight,
-  Stamp
+  Stamp,
+  LoaderCircle,
 } from 'lucide-react';
 import { StatusBadge } from '../components/common/StatusBadge';
 import { formatRupiah, formatDateId, cleanWhatsAppNumber } from '../utils/formatters';
@@ -38,6 +39,7 @@ import { ConfirmModal } from '../components/common/ConfirmModal';
 import { EditCustomerModal, EditProductModal, EditCollarModal } from '../components/order/EditSectionModals';
 import { PlayerFastPasteModal } from '../components/order/PlayerFastPasteModal';
 import { PlayerDetail } from '../types/order';
+import { DesignUploader } from '../components/invoice/DesignUploader';
 
 interface OrderDetailProps {
   order: Order;
@@ -46,9 +48,9 @@ interface OrderDetailProps {
   onPrint: (order: Order) => void;
   onDownloadPdf?: (order: Order) => Promise<void> | void;
   onDuplicate: (id: string) => void;
-  onDelete: (id: string) => void;
-  onStatusChange: (id: string, newStatus: ProductionStatus) => void;
-  onOrderUpdated?: (updatedOrder: Order) => void;
+  onDelete: (id: string) => Promise<boolean> | boolean;
+  onStatusChange: (id: string, newStatus: ProductionStatus) => Promise<void> | void;
+  onOrderUpdated?: (updatedOrder: Order) => Promise<boolean> | boolean;
 }
 
 export const OrderDetail: React.FC<OrderDetailProps> = ({
@@ -64,6 +66,8 @@ export const OrderDetail: React.FC<OrderDetailProps> = ({
 }) => {
   const [activeTab, setActiveTab] = useState<'detail' | 'document'>('detail');
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [updatingStatus, setUpdatingStatus] = useState<ProductionStatus | null>(null);
   const [isDownloadingPdf, setIsDownloadingPdf] = useState(false);
   const [isEditCustomerOpen, setIsEditCustomerOpen] = useState(false);
   const [isEditProductOpen, setIsEditProductOpen] = useState(false);
@@ -116,6 +120,9 @@ export const OrderDetail: React.FC<OrderDetailProps> = ({
             </div>
             <p className="text-xs text-neutral-400 font-medium mt-0.5">
               Dibuat: {formatDateId(order.createdAt)} · Terakhir diupdate: {formatDateId(order.updatedAt)}
+            </p>
+            <p className="mt-1 text-[11px] font-semibold text-neutral-700">
+              Metode: {order.salesChannel || 'Offline'} · Nomor Pesanan: {order.externalOrderNumber || 'Belum dicatat'}
             </p>
           </div>
         </div>
@@ -207,8 +214,16 @@ export const OrderDetail: React.FC<OrderDetailProps> = ({
               <button
                 key={st.status}
                 type="button"
-                onClick={() => onStatusChange(order.id, st.status)}
-                className={`p-3 rounded-2xl border text-left transition-all relative overflow-hidden group cursor-pointer ${
+                disabled={updatingStatus !== null}
+                onClick={async () => {
+                  setUpdatingStatus(st.status);
+                  try {
+                    await onStatusChange(order.id, st.status);
+                  } finally {
+                    setUpdatingStatus(null);
+                  }
+                }}
+                className={`p-3 rounded-2xl border text-left transition-all relative overflow-hidden group cursor-pointer disabled:cursor-wait disabled:opacity-70 ${
                   isCurrent
                     ? 'bg-neutral-900 text-white border-neutral-900 shadow-md ring-2 ring-red-500/20'
                     : isPassed
@@ -220,7 +235,9 @@ export const OrderDetail: React.FC<OrderDetailProps> = ({
                   <span className={`text-[10px] font-mono font-bold ${isCurrent ? 'text-neutral-400' : 'text-neutral-400'}`}>
                     0{idx + 1}
                   </span>
-                  {isPassed && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />}
+                  {updatingStatus === st.status
+                    ? <LoaderCircle className="w-3.5 h-3.5 animate-spin" />
+                    : isPassed && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />}
                 </div>
                 <div className="font-bold text-xs truncate">{st.label}</div>
                 <div className={`text-[10px] truncate mt-0.5 ${isCurrent ? 'text-neutral-400' : 'text-neutral-400'}`}>
@@ -532,34 +549,21 @@ export const OrderDetail: React.FC<OrderDetailProps> = ({
             </div>
           </div>
 
-          {/* Row 3: Design Artwork Gallery */}
-          {designs.length > 0 && (
-            <div className="bg-white rounded-3xl border border-neutral-200/80 p-5 sm:p-6 shadow-2xs">
-              <h3 className="text-xs font-bold text-neutral-400 uppercase tracking-wider mb-4">
-                File Visual Desain Produk ({designs.length})
-              </h3>
-              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
-                {designs.map(d => (
-                  <div key={d.id} className="p-2.5 rounded-2xl border border-neutral-200 bg-neutral-50/50">
-                    <div className="aspect-16/10 rounded-xl overflow-hidden bg-white border border-neutral-200 flex items-center justify-center p-2">
-                      <img src={d.dataUrl} alt={d.label} className="w-full h-full object-contain" />
-                    </div>
-                    <div className="mt-2 flex items-center justify-between">
-                      <span className="text-xs font-bold text-neutral-800 truncate">{d.label}</span>
-                      <a
-                        href={d.dataUrl}
-                        download={`Desain_${order.orderNumber}_${d.label}.png`}
-                        className="p-1 text-neutral-400 hover:text-neutral-900"
-                        title="Unduh Gambar"
-                      >
-                        <Download className="w-3.5 h-3.5" />
-                      </a>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+          {/* Row 3: Design upload and editable gallery */}
+          <DesignUploader
+            orderId={order.id}
+            designs={designs}
+            materialName={product.material}
+            onChange={async nextDesigns => {
+              const updated = { ...order, designs: nextDesigns };
+              if (onOrderUpdated) {
+                const saved = await onOrderUpdated(updated);
+                if (!saved) throw new Error('Perubahan desain tidak tersimpan ke database.');
+              } else {
+                storageService.saveOrder(updated);
+              }
+            }}
+          />
 
           {/* Row 4: Player & Size Roster Table */}
           <div className="bg-white rounded-3xl border border-neutral-200/80 p-5 sm:p-6 shadow-2xs">
@@ -687,13 +691,21 @@ export const OrderDetail: React.FC<OrderDetailProps> = ({
         title="Hapus Order Produksi?"
         subtitle={`Order #${order.orderNumber} atas nama ${customer.name} akan dihapus secara permanen.`}
         type="danger"
-        confirmText="Hapus Permanen"
+        confirmText="Hapus Pesanan"
         cancelText="Batal"
-        onConfirm={() => {
-          setIsDeleteModalOpen(false);
-          onDelete(order.id);
+        onConfirm={async () => {
+          if (isDeleting) return;
+          setIsDeleting(true);
+          try {
+            const deleted = await onDelete(order.id);
+            if (deleted) setIsDeleteModalOpen(false);
+          } finally {
+            setIsDeleting(false);
+          }
         }}
         onCancel={() => setIsDeleteModalOpen(false)}
+        isProcessing={isDeleting}
+        processingText="Menghapus..."
       />
 
       {/* Edit Customer Modal */}
@@ -701,9 +713,13 @@ export const OrderDetail: React.FC<OrderDetailProps> = ({
         isOpen={isEditCustomerOpen}
         onClose={() => setIsEditCustomerOpen(false)}
         order={order}
-        onSave={updated => {
-          storageService.saveOrder(updated);
-          if (onOrderUpdated) onOrderUpdated(updated);
+        onSave={async updated => {
+          if (onOrderUpdated) {
+            const saved = await onOrderUpdated(updated);
+            if (!saved) throw new Error('Perubahan pelanggan tidak tersimpan.');
+          } else {
+            storageService.saveOrder(updated);
+          }
         }}
       />
 
@@ -712,9 +728,13 @@ export const OrderDetail: React.FC<OrderDetailProps> = ({
         isOpen={isEditProductOpen}
         onClose={() => setIsEditProductOpen(false)}
         order={order}
-        onSave={updated => {
-          storageService.saveOrder(updated);
-          if (onOrderUpdated) onOrderUpdated(updated);
+        onSave={async updated => {
+          if (onOrderUpdated) {
+            const saved = await onOrderUpdated(updated);
+            if (!saved) throw new Error('Perubahan produk tidak tersimpan.');
+          } else {
+            storageService.saveOrder(updated);
+          }
         }}
       />
 
@@ -736,9 +756,16 @@ export const OrderDetail: React.FC<OrderDetailProps> = ({
         defaultSleeve={product.sleeve}
         onApply={(newPlayers, mode) => {
           const updatedPlayers = mode === 'replace' ? newPlayers : [...order.players, ...newPlayers];
+          const totalQuantity = updatedPlayers.reduce((sum, player) => sum + (Number(player.quantity) || 0), 0);
           const updated: Order = {
             ...order,
             players: updatedPlayers,
+            product: {
+              ...order.product,
+              totalQuantity,
+              totalPrice: totalQuantity * order.product.unitPrice,
+              remainingPayment: Math.max(0, totalQuantity * order.product.unitPrice - order.product.downPayment),
+            },
           };
           storageService.saveOrder(updated);
           if (onOrderUpdated) onOrderUpdated(updated);

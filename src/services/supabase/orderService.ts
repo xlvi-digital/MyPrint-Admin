@@ -4,6 +4,7 @@ import { storageService } from '../storageService';
 import { authRoleService } from './authRoleService';
 import { supabaseStorageService } from './storageService';
 import { isValidUuid, generateUuid } from '../../utils/uuid';
+import { masterDataService } from './masterDataService';
 
 export interface ActivityLog {
   id: string;
@@ -20,7 +21,19 @@ export interface SaveOrderResult {
   success: boolean;
   order: Order;
   error?: string;
+  designsError?: string;
+  assetsError?: string;
   source: 'supabase' | 'local';
+}
+
+interface OrderDesignRow {
+  id: string;
+  label: string | null;
+  data_url: string | null;
+  file_name: string | null;
+  sort_order: number | null;
+  storage_path: string | null;
+  storage_bucket: string | null;
 }
 
 // Map database row to domain Order model
@@ -44,8 +57,10 @@ const mapDbRowToOrder = (
   const mappedDesigns = designs.map(d => ({
     id: d.id,
     label: d.label || 'Desain',
-    dataUrl: d.data_url || '',
+    dataUrl: d.resolved_url || d.data_url || '',
     fileName: d.file_name || '',
+    storagePath: d.storage_path || undefined,
+    storageBucket: d.storage_bucket || undefined,
   }));
 
   const mappedPrinting = printing.map(p => ({
@@ -56,6 +71,10 @@ const mapDbRowToOrder = (
   return {
     id: String(row.id),
     orderNumber: row.order_number,
+    salesChannel: row.sales_channel === 'Shopee' || row.sales_channel === 'Tokopedia'
+      ? row.sales_channel
+      : 'Offline',
+    externalOrderNumber: row.external_order_number || '',
     customer: {
       name: row.customer_name,
       phone: row.customer_phone || '',
@@ -104,10 +123,31 @@ const mapDbRowToOrder = (
 };
 
 export const supabaseOrderService = {
-  // Fetch all orders with child tables
-  async getOrders(): Promise<Order[]> {
+  async deleteDesignAssetIfUnreferenced(storageBucket?: string, storagePath?: string): Promise<void> {
+    if (!storageBucket || !storagePath || storageBucket === 'local') return;
+    const client = getSupabaseClient();
+    if (!client || !isSupabaseConfigured()) return;
+
+    const { data, error } = await client
+      .from('order_designs')
+      .select('id')
+      .eq('storage_bucket', storageBucket)
+      .eq('storage_path', storagePath)
+      .limit(1);
+    if (error) {
+      throw new Error(`Gagal memeriksa referensi file desain sebelum menghapus: ${error.message}`);
+    }
+    if (data?.length) return;
+    await supabaseStorageService.deleteOrderDesignFile(storageBucket, storagePath);
+  },
+
+  // Keep the response bounded; Supabase should not send an unbounded order history.
+  async getOrders(options: { fallbackToLocal?: boolean } = {}): Promise<Order[]> {
     const client = getSupabaseClient();
     if (!client || !isSupabaseConfigured()) {
+      if (options.fallbackToLocal === false) {
+        throw new Error('Supabase belum dikonfigurasi untuk membaca data pesanan.');
+      }
       return storageService.getOrders();
     }
 
@@ -115,7 +155,8 @@ export const supabaseOrderService = {
       const { data: ordersData, error: ordersError } = await client
         .from('orders')
         .select('*')
-        .order('created_at', { ascending: false });
+        .order('created_at', { ascending: false })
+        .limit(1000);
 
       if (ordersError) {
         console.warn('[Supabase] Fetch orders error:', ordersError);
@@ -138,13 +179,29 @@ export const supabaseOrderService = {
         client.from('order_collar').select('*').in('order_id', orderIds),
       ]);
 
+      const relatedError = itemsRes.error || designsRes.error || printRes.error || collarRes.error;
+      if (relatedError) {
+        throw new Error(`Gagal membaca data order terkait: ${relatedError.message}`);
+      }
+
+      const designRows = await Promise.all((designsRes.data || []).map(async (design: Record<string, any>) => {
+        if (!design.storage_path || !design.storage_bucket) return design;
+        return {
+          ...design,
+          resolved_url: await supabaseStorageService.createSignedOrderDesignUrl(
+            design.storage_bucket,
+            design.storage_path,
+          ),
+        };
+      }));
+
       const itemsByOrder = (itemsRes.data || []).reduce((acc: any, item: any) => {
         acc[item.order_id] = acc[item.order_id] || [];
         acc[item.order_id].push(item);
         return acc;
       }, {});
 
-      const designsByOrder = (designsRes.data || []).reduce((acc: any, d: any) => {
+      const designsByOrder = designRows.reduce((acc: any, d: any) => {
         acc[d.order_id] = acc[d.order_id] || [];
         acc[d.order_id].push(d);
         return acc;
@@ -171,12 +228,11 @@ export const supabaseOrderService = {
         )
       );
 
-      // Cache locally for offline resilience
+      // Keep only an in-memory snapshot; orders and image URLs are never persisted to browser storage.
       storageService.saveOrders(assembledOrders);
       return assembledOrders;
     } catch (err: any) {
-      console.warn('[Supabase] Falling back to local cache due to fetch error:', err.message);
-      return storageService.getOrders();
+      throw new Error(err instanceof Error ? err.message : 'Gagal memuat data order dari Supabase.');
     }
   },
 
@@ -186,33 +242,17 @@ export const supabaseOrderService = {
     const currentProfile = authRoleService.getCurrentProfile();
 
     // The orders table uses TEXT IDs; preserve existing IDs so retries update the same row.
-    if (!order.id?.trim()) {
+    if (!isValidUuid(order.id)) {
       order = { ...order, id: generateUuid() };
     }
 
     if (!client || !isSupabaseConfigured()) {
-      // Offline / LocalStorage Mode
-      const localOrders = storageService.getOrders();
-      const existingLocalOrder = localOrders.find(existing => existing.id === order.id);
-      if (!existingLocalOrder) {
-        const localOrderNumber = storageService.getNextLocalOrderNumber();
-        order = {
-          ...order,
-          orderNumber: localOrderNumber,
-          customer: { ...order.customer, orderNumber: localOrderNumber },
-        };
-      } else {
-        order = {
-          ...order,
-          orderNumber: existingLocalOrder.orderNumber,
-          customer: { ...order.customer, orderNumber: existingLocalOrder.orderNumber },
-        };
-      }
-      storageService.saveOrder(order);
-      await this.logActivity(order.id, order.orderNumber, 'ORDER_SAVED_LOCAL', {
-        customer: order.customer.name,
-      });
-      return { success: true, order, source: 'local' };
+      return {
+        success: false,
+        order,
+        error: 'Supabase belum dikonfigurasi. Pesanan tidak disimpan secara lokal.',
+        source: 'local',
+      };
     }
 
     try {
@@ -270,9 +310,15 @@ export const supabaseOrderService = {
           };
         }
 
+        const [materialId, productTypeId] = await Promise.all([
+          masterDataService.resolveId('materials', order.product.material),
+          masterDataService.resolveId('product_types', order.product.productType),
+        ]);
         const orderPayload = {
           id: order.id,
           order_number: order.orderNumber,
+          sales_channel: order.salesChannel || 'Offline',
+          external_order_number: order.externalOrderNumber?.trim() || null,
           customer_name: order.customer.name.trim(),
           customer_phone: order.customer.phone ? order.customer.phone.trim() : null,
           customer_email: order.customer.email ? order.customer.email.trim() : null,
@@ -281,7 +327,9 @@ export const supabaseOrderService = {
           order_date: order.customer.orderDate || new Date().toISOString().split('T')[0],
           deadline_date: order.customer.deadlineDate || null,
           product_type: order.product.productType || 'Jersey Sublime',
+          product_type_id: productTypeId,
           material: order.product.material || 'Milano',
+          material_id: materialId,
           color: order.product.color || null,
           model: order.product.model || 'Reguler Fit',
           sleeve: order.product.sleeve || 'Pendek',
@@ -338,13 +386,26 @@ export const supabaseOrderService = {
         };
       }
 
-      const savedOrderId = upsertData?.id || order.id;
+      const savedOrderId = upsertData.id;
+      if (!isValidUuid(savedOrderId)) {
+        return {
+          success: false,
+          order,
+          error: 'Supabase menyimpan order tanpa ID UUID yang valid; metadata turunannya tidak diproses.',
+          source: 'supabase',
+        };
+      }
       order = {
         ...order,
         id: savedOrderId,
         orderNumber: upsertData.order_number,
         customer: { ...order.customer, orderNumber: upsertData.order_number },
       };
+      let assetsError: string | undefined;
+      if (order.collar.imageUrl?.startsWith('data:')) {
+        order = { ...order, collar: { ...order.collar, imageUrl: undefined, imagePath: undefined } };
+        assetsError = 'Gambar referensi kerah belum disimpan karena belum diunggah ke Supabase Storage.';
+      }
 
       // 2. Sync Order Items / Player Roster
       // Clear previous items for this order to avoid stale or duplicate rows
@@ -366,12 +427,13 @@ export const supabaseOrderService = {
       if (order.players && order.players.length > 0) {
         // Build roster payload without sending temporary frontend IDs (e.g. "p-...") to the UUID column.
         // Let PostgreSQL auto-generate genuine UUIDs via default gen_random_uuid().
-        const itemsToInsert = order.players.map((p, index) => {
+        const itemsToInsert = await Promise.all(order.players.map(async (p, index) => {
           const itemPayload: Record<string, any> = {
             order_id: savedOrderId,
             name: p.name.trim(),
             number: p.number ? String(p.number).trim() : '',
             size: p.size || 'L',
+            size_id: await masterDataService.resolveId('jersey_sizes', p.size || 'L'),
             quantity: Number(p.quantity) || 1,
             notes: p.notes ? p.notes.trim() : null,
             sleeve: p.sleeve || null,
@@ -382,7 +444,7 @@ export const supabaseOrderService = {
             itemPayload.id = p.id;
           }
           return itemPayload;
-        });
+        }));
 
         const { data: savedItems, error: insertItemsErr } = await client
           .from('order_items')
@@ -418,37 +480,159 @@ export const supabaseOrderService = {
         }
       }
 
-      // 3. Sync Designs
-      await client.from('order_designs').delete().eq('order_id', savedOrderId);
-      if (order.designs && order.designs.length > 0) {
-        const designsToInsert = order.designs.map((d, index) => {
-          const designPayload: Record<string, any> = {
-            order_id: savedOrderId,
-            label: d.label || 'Desain Utama',
-            data_url: d.dataUrl,
-            file_name: d.fileName || null,
-            sort_order: index + 1,
-          };
-          if (isValidUuid(d.id)) {
-            designPayload.id = d.id;
-          }
-          return designPayload;
+      // 3. Sync design records with database-generated UUIDs before removing stale rows.
+      const { data: previousDesigns, error: previousDesignsError } = await client
+        .from('order_designs')
+        .select('id, label, data_url, file_name, sort_order, storage_path, storage_bucket')
+        .eq('order_id', savedOrderId);
+      const previousDesignRows: OrderDesignRow[] = previousDesigns || [];
+      let designsError: string | undefined;
+      if (previousDesignsError) {
+        designsError = `Desain lama gagal dibaca untuk disinkronkan: ${previousDesignsError.message}`;
+        order.designs = previousDesignRows.map(design => ({
+          id: design.id,
+          label: design.label || 'Desain',
+          dataUrl: design.data_url || '',
+          fileName: design.file_name || '',
+          storagePath: design.storage_path || undefined,
+          storageBucket: design.storage_bucket || undefined,
+        }));
+      } else {
+        const savedDesignRows = new Map<string, Record<string, any>>();
+        const insertedDesignIds: string[] = [];
+        const previousById = new Map(previousDesignRows.map(design => [design.id, design]));
+        const previousByStoragePath = new Map(
+          previousDesignRows
+            .filter(design => design.storage_path && design.storage_bucket)
+            .map(design => [`${design.storage_bucket}:${design.storage_path}`, design]),
+        );
+        const makeDesignPayload = (design: Order['designs'][number], index: number) => ({
+          order_id: savedOrderId,
+          label: design.label || 'Desain Utama',
+          data_url: design.storagePath || design.dataUrl,
+          file_name: design.fileName || null,
+          sort_order: index + 1,
+          storage_path: design.storagePath || null,
+          storage_bucket: design.storageBucket || null,
         });
 
-        const { data: savedDesigns, error: insertDesignsErr } = await client
-          .from('order_designs')
-          .insert(designsToInsert)
-          .select();
+        try {
+          for (const [index, design] of (order.designs || []).entries()) {
+            if (design.dataUrl.startsWith('data:') && !design.storagePath) {
+              throw new Error(`Desain "${design.fileName || design.label}" belum diunggah ke Supabase Storage.`);
+            }
+            const payload = makeDesignPayload(design, index);
+            const existing = isValidUuid(design.id) ? previousById.get(design.id) : undefined;
+            const matchingPath = design.storagePath && design.storageBucket
+              ? previousByStoragePath.get(`${design.storageBucket}:${design.storagePath}`)
+              : undefined;
+            const recordToUpdate = existing || matchingPath;
 
-        if (insertDesignsErr) {
-          console.warn('[Supabase] Warning syncing designs:', insertDesignsErr.message);
-        } else if (savedDesigns && savedDesigns.length > 0) {
-          order.designs = savedDesigns.map(d => ({
-            id: d.id,
-            label: d.label || 'Desain Utama',
-            dataUrl: d.data_url,
-            fileName: d.file_name || undefined,
+            if (recordToUpdate) {
+              const { data, error } = await client
+                .from('order_designs')
+                .update(payload)
+                .eq('id', recordToUpdate.id)
+                .eq('order_id', savedOrderId)
+                .select('id, label, data_url, file_name, sort_order, storage_path, storage_bucket')
+                .single();
+              if (error || !data) {
+                throw new Error(error?.message || 'Supabase tidak mengembalikan desain yang diperbarui.');
+              }
+              savedDesignRows.set(design.id, data);
+              continue;
+            }
+
+            const { data, error } = await client
+              .from('order_designs')
+              .insert(payload)
+              .select('id, label, data_url, file_name, sort_order, storage_path, storage_bucket')
+              .single();
+            if (error || !data) {
+              throw new Error(error?.message || 'Supabase tidak mengembalikan ID UUID desain baru.');
+            }
+            insertedDesignIds.push(data.id);
+            savedDesignRows.set(design.id, data);
+          }
+        } catch (designSaveError) {
+          const reason = designSaveError instanceof Error
+            ? designSaveError.message
+            : 'Kesalahan tidak diketahui saat menyimpan metadata desain.';
+          const rollbackErrors: string[] = [];
+          if (insertedDesignIds.length > 0) {
+            const { error } = await client
+              .from('order_designs')
+              .delete()
+              .in('id', insertedDesignIds)
+              .eq('order_id', savedOrderId);
+            if (error) rollbackErrors.push(`metadata sementara gagal dibatalkan: ${error.message}`);
+          }
+          for (const design of order.designs || []) {
+            if (!design.storagePath || !design.storageBucket || isValidUuid(design.id)) continue;
+            try {
+              await this.deleteDesignAssetIfUnreferenced(design.storageBucket, design.storagePath);
+            } catch (cleanupError) {
+              rollbackErrors.push(
+                cleanupError instanceof Error ? cleanupError.message : 'file Storage sementara gagal dibersihkan.',
+              );
+            }
+          }
+          designsError = `Order tersimpan, tetapi metadata desain gagal disimpan: ${reason}${rollbackErrors.length ? ` (${rollbackErrors.join('; ')})` : ''}`;
+          order.designs = previousDesignRows.map(design => ({
+            id: design.id,
+            label: design.label || 'Desain',
+            dataUrl: design.data_url || '',
+            fileName: design.file_name || '',
+            storagePath: design.storage_path || undefined,
+            storageBucket: design.storage_bucket || undefined,
           }));
+        }
+
+        if (!designsError) {
+          const savedDesigns = (order.designs || []).map(design => {
+            const row = savedDesignRows.get(design.id);
+            return {
+              ...design,
+              id: row?.id || design.id,
+              dataUrl: design.storagePath ? design.dataUrl : row?.data_url || design.dataUrl,
+              fileName: row?.file_name || design.fileName,
+              storagePath: row?.storage_path || undefined,
+              storageBucket: row?.storage_bucket || undefined,
+              label: row?.label || design.label,
+            };
+          });
+          const wantedDesignIds = new Set(savedDesigns.map(design => design.id));
+          const removedDesigns = previousDesignRows.filter(design => !wantedDesignIds.has(design.id));
+          const changedStorageRefs = previousDesignRows.filter(previous => {
+            if (!previous.storage_path || !previous.storage_bucket) return false;
+            const current = savedDesigns.find(design => design.id === previous.id);
+            return !current
+              || current.storagePath !== previous.storage_path
+              || current.storageBucket !== previous.storage_bucket;
+          });
+          if (removedDesigns.length > 0) {
+            const { error } = await client
+              .from('order_designs')
+              .delete()
+              .in('id', removedDesigns.map(design => design.id))
+              .eq('order_id', savedOrderId);
+            if (error) {
+              designsError = `Order tersimpan, tetapi desain lama gagal dihapus dari database: ${error.message}`;
+              order.designs = savedDesigns;
+            }
+          }
+
+          if (!designsError) {
+            order.designs = savedDesigns;
+            for (const oldDesign of changedStorageRefs) {
+              if (!oldDesign.storage_path || !oldDesign.storage_bucket) continue;
+              try {
+                await this.deleteDesignAssetIfUnreferenced(oldDesign.storage_bucket, oldDesign.storage_path);
+              } catch (cleanupError) {
+                console.error('[Supabase] Desain lama tersimpan sebagai orphan di Storage:', cleanupError);
+              }
+            }
+          }
         }
       }
 
@@ -485,10 +669,11 @@ export const supabaseOrderService = {
       // 5. Sync Collar Spec & Visual Reference
       await client.from('order_collar').delete().eq('order_id', savedOrderId);
       if (order.collar) {
-        const collarImageUrl = order.collar.imageUrl || order.collar.imagePath || null;
+          const collarImageUrl = order.collar.imageUrl || order.collar.imagePath || null;
         const fullPayload: Record<string, any> = {
           order_id: savedOrderId,
           model_name: order.collar.modelName || 'POLO KANCING 2',
+          collar_model_id: await masterDataService.resolveId('collar_models', order.collar.modelName || 'POLO KANCING 2'),
           image_url: collarImageUrl,
           image_path: order.collar.imagePath || null,
           updated_at: new Date().toISOString(),
@@ -500,6 +685,7 @@ export const supabaseOrderService = {
           const fallbackRes = await client.from('order_collar').insert({
             order_id: savedOrderId,
             model_name: order.collar.modelName || 'POLO KANCING 2',
+            collar_model_id: fullPayload.collar_model_id,
             image_url: collarImageUrl,
           });
           collarErr = fallbackRes.error;
@@ -527,7 +713,7 @@ export const supabaseOrderService = {
       order.id = savedOrderId;
       storageService.saveOrder(order);
 
-      return { success: true, order, source: 'supabase' };
+      return { success: true, order, designsError, assetsError, source: 'supabase' };
     } catch (err: any) {
       console.error('[Supabase] Critical exception saving order:', err);
       return {
@@ -548,8 +734,7 @@ export const supabaseOrderService = {
     const currentProfile = authRoleService.getCurrentProfile();
 
     if (!client || !isSupabaseConfigured()) {
-      storageService.updateProductionStatus(orderId, newStatus);
-      return { success: true };
+      return { success: false, error: 'Supabase belum dikonfigurasi untuk memperbarui status pesanan.' };
     }
 
     try {
@@ -590,18 +775,17 @@ export const supabaseOrderService = {
     collar: CollarSpec,
     oldImagePath?: string
   ): Promise<{ success: boolean; error?: string }> {
-    const target = storageService.getOrderById(orderId);
-    if (target) {
-      target.collar = collar;
-      storageService.saveOrder(target);
-    }
-
     const client = getSupabaseClient();
     const currentProfile = authRoleService.getCurrentProfile();
 
     if (!client || !isSupabaseConfigured()) {
-      return { success: true };
+      return { success: false, error: 'Supabase belum dikonfigurasi untuk memperbarui data kerah.' };
     }
+    if (collar.imageUrl?.startsWith('data:')) {
+      return { success: false, error: 'Gambar kerah belum diunggah ke Supabase Storage.' };
+    }
+
+    const target = storageService.getOrderById(orderId);
 
     try {
       // 1. Delete and re-insert into order_collar table
@@ -611,6 +795,7 @@ export const supabaseOrderService = {
       const fullPayload: Record<string, any> = {
         order_id: orderId,
         model_name: collar.modelName || 'POLO KANCING 2',
+        collar_model_id: await masterDataService.resolveId('collar_models', collar.modelName || 'POLO KANCING 2'),
         image_url: collarImageUrl,
         image_path: collar.imagePath || null,
         updated_at: new Date().toISOString(),
@@ -623,6 +808,7 @@ export const supabaseOrderService = {
         const fallbackRes = await client.from('order_collar').insert({
           order_id: orderId,
           model_name: collar.modelName || 'POLO KANCING 2',
+          collar_model_id: fullPayload.collar_model_id,
           image_url: collarImageUrl,
         });
         insertErr = fallbackRes.error;
@@ -631,6 +817,10 @@ export const supabaseOrderService = {
       if (insertErr) {
         console.error('[Supabase] Update collar DB error:', insertErr);
         return { success: false, error: `Gagal memperbarui spesifikasi kerah: ${insertErr.message}` };
+      }
+      if (target) {
+        target.collar = collar;
+        storageService.saveOrder(target);
       }
 
       // 2. Touch order updated_at
@@ -666,8 +856,7 @@ export const supabaseOrderService = {
     const client = getSupabaseClient();
 
     if (!client || !isSupabaseConfigured()) {
-      storageService.deleteOrder(orderId);
-      return { success: true };
+      return { success: false, error: 'Supabase belum dikonfigurasi. Pesanan tidak dihapus.' };
     }
 
     try {

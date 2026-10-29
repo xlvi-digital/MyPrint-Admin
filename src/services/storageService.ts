@@ -2,10 +2,9 @@ import { Order, PlayerDetail, ProductionStatus } from '../types/order';
 import { generateUuid } from '../utils/uuid';
 import { generateNextLocalOrderNumber } from '../utils/formatters';
 
-const STORAGE_KEY = 'myprintin_orders';
 const DRAFT_KEY = 'myprintin_active_draft';
 const LOCAL_ORDER_SEQUENCE_KEY = 'myprintin_order_number_last';
-const DEMO_SEEDED_KEY = 'myprintin_seeded_v1';
+const LEGACY_ORDERS_KEY = 'myprintin_orders';
 
 // Clean SVG Mockup for Jersey Sublime similar to Pasdama Jersey in PDF
 const DEFAULT_JERSEY_MOCKUP = `data:image/svg+xml;utf8,${encodeURIComponent(`
@@ -287,21 +286,11 @@ const INITIAL_DEMO_ORDERS: Order[] = [
   },
 ];
 
+let memoryOrders: Order[] = INITIAL_DEMO_ORDERS;
+
 export const storageService = {
   getOrders(): Order[] {
-    try {
-      const stored = localStorage.getItem(STORAGE_KEY);
-      if (!stored) {
-        // Initialize with realistic demo data
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(INITIAL_DEMO_ORDERS));
-        localStorage.setItem(DEMO_SEEDED_KEY, 'true');
-        return INITIAL_DEMO_ORDERS;
-      }
-      return JSON.parse(stored);
-    } catch (e) {
-      console.error('Failed to read orders from localStorage', e);
-      return INITIAL_DEMO_ORDERS;
-    }
+    return memoryOrders;
   },
 
   getOrderById(id: string): Order | undefined {
@@ -309,17 +298,48 @@ export const storageService = {
     return orders.find(o => o.id === id || o.orderNumber === id);
   },
 
+  getLegacyOrders(): Order[] | null {
+    try {
+      const stored = localStorage.getItem(LEGACY_ORDERS_KEY);
+      if (!stored) return null;
+      const parsed: unknown = JSON.parse(stored);
+      return Array.isArray(parsed) ? parsed as Order[] : null;
+    } catch (error) {
+      console.warn('Could not read the legacy browser order backup.', error);
+      return null;
+    }
+  },
+
+  clearLegacyOrders(): boolean {
+    try {
+      localStorage.removeItem(LEGACY_ORDERS_KEY);
+      return true;
+    } catch (error) {
+      console.error('Could not clear the legacy browser order cache.', error);
+      return false;
+    }
+  },
+
   getNextLocalOrderNumber(): string {
     const year = new Date().getFullYear();
     const counterKey = `${LOCAL_ORDER_SEQUENCE_KEY}_${year}`;
-    const savedSequence = Number(localStorage.getItem(counterKey)) || 0;
+    let savedSequence = 0;
+    try {
+      savedSequence = Number(localStorage.getItem(counterKey)) || 0;
+    } catch (error) {
+      console.warn('Could not read the local order sequence.', error);
+    }
     const nextNumber = generateNextLocalOrderNumber(this.getOrders(), year, savedSequence);
-    localStorage.setItem(counterKey, nextNumber.slice(`ORD-${year}-`.length));
+    try {
+      localStorage.setItem(counterKey, nextNumber.slice(`ORD-${year}-`.length));
+    } catch (error) {
+      console.warn('Could not save the local order sequence.', error);
+    }
     return nextNumber;
   },
 
   saveOrder(order: Order): Order {
-    const orders = this.getOrders();
+    const orders = [...this.getOrders()];
     const existingIndex = orders.findIndex(o => o.id === order.id);
     const now = new Date().toISOString();
 
@@ -336,15 +356,14 @@ export const storageService = {
       });
     }
 
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(orders));
+    memoryOrders = orders;
     this.clearDraft();
     return order;
   },
 
   deleteOrder(id: string): boolean {
     const orders = this.getOrders();
-    const filtered = orders.filter(o => o.id !== id);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(filtered));
+    memoryOrders = orders.filter(o => o.id !== id);
     return true;
   },
 
@@ -391,17 +410,17 @@ export const storageService = {
   },
 
   saveOrders(orders: Order[]): void {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(orders));
+    memoryOrders = orders;
   },
 
   updateProductionStatus(id: string, status: ProductionStatus): Order | null {
-    const orders = this.getOrders();
+    const orders = [...this.getOrders()];
     const order = orders.find(o => o.id === id);
     if (!order) return null;
 
     order.productionStatus = status;
     order.updatedAt = new Date().toISOString();
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(orders));
+    memoryOrders = orders;
     return order;
   },
 
@@ -416,22 +435,38 @@ export const storageService = {
 
   saveDraft(draftData: Partial<Order>): void {
     try {
-      localStorage.setItem(DRAFT_KEY, JSON.stringify(draftData));
+      const lightDraft = { ...draftData };
+      delete lightDraft.designs;
+      const safeDraft = {
+        ...lightDraft,
+        collar: lightDraft.collar
+          ? {
+              ...lightDraft.collar,
+              imageUrl: lightDraft.collar.imageUrl?.startsWith('data:')
+                ? undefined
+                : lightDraft.collar.imageUrl,
+            }
+          : undefined,
+      };
+      localStorage.setItem(DRAFT_KEY, JSON.stringify(safeDraft));
     } catch (e) {
       console.warn('Could not save draft to localStorage', e);
     }
   },
 
   clearDraft(): void {
-    localStorage.removeItem(DRAFT_KEY);
+    try {
+      localStorage.removeItem(DRAFT_KEY);
+    } catch (error) {
+      console.warn('Could not clear the local order draft.', error);
+    }
   },
 
   resetToDemoData(): void {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(INITIAL_DEMO_ORDERS));
-    localStorage.setItem(DEMO_SEEDED_KEY, 'true');
+    memoryOrders = INITIAL_DEMO_ORDERS;
   },
 
   clearAllOrders(): void {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify([]));
+    memoryOrders = [];
   },
 };

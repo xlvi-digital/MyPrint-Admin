@@ -15,13 +15,14 @@ import {
   X,
   Radio,
   Database,
-  Shield,
-  RefreshCw
+  RefreshCw,
+  LoaderCircle,
+  LogOut
 } from 'lucide-react';
 import { Order } from '../../types/order';
 import { formatDateId } from '../../utils/formatters';
 import { authRoleService, UserProfile, WORKSHOP_PROFILES } from '../../services/supabase/authRoleService';
-import { isSupabaseConfigured } from '../../services/supabase/client';
+import { AppRole } from '../../hooks/useSupabaseAuth';
 
 interface TopbarProps {
   title: string;
@@ -34,7 +35,11 @@ interface TopbarProps {
   onClearAll: () => void;
   realtimeStatus?: 'connected' | 'connecting' | 'disconnected' | 'local_mode';
   onRefreshOrders?: () => void;
+  isRefreshing?: boolean;
   onOpenSettingsDatabase?: () => void;
+  authEmail?: string;
+  authRole?: AppRole;
+  onSignOut?: () => void;
 }
 
 export const Topbar: React.FC<TopbarProps> = ({
@@ -48,7 +53,11 @@ export const Topbar: React.FC<TopbarProps> = ({
   onClearAll,
   realtimeStatus = 'local_mode',
   onRefreshOrders,
+  isRefreshing = false,
   onOpenSettingsDatabase,
+  authEmail,
+  authRole,
+  onSignOut,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearchOpen, setIsSearchOpen] = useState(false);
@@ -302,6 +311,20 @@ export const Topbar: React.FC<TopbarProps> = ({
               : 'Local / Offline'}
           </span>
         </button>
+        {onRefreshOrders && (
+          <button
+            type="button"
+            onClick={onRefreshOrders}
+            disabled={isRefreshing}
+            title="Muat ulang data dari Supabase"
+            aria-label="Muat ulang data order"
+            className="rounded-xl p-2 text-neutral-600 transition-colors hover:bg-neutral-100 hover:text-neutral-900 disabled:cursor-wait disabled:opacity-50"
+          >
+            {isRefreshing
+              ? <LoaderCircle className="h-4 w-4 animate-spin" />
+              : <RefreshCw className="h-4 w-4" />}
+          </button>
+        )}
 
         {/* Notification Bell */}
         <div className="relative" ref={notifRef}>
@@ -362,23 +385,23 @@ export const Topbar: React.FC<TopbarProps> = ({
           )}
         </div>
 
-        {/* Profile & Multi-Admin Switcher */}
+        {/* Supabase session identity; local role switch is only used in offline/demo mode. */}
         <div className="relative" ref={profileRef}>
           <button
             onClick={() => setIsProfileOpen(!isProfileOpen)}
             className="flex items-center gap-2 p-1.5 sm:px-3 sm:py-1.5 hover:bg-neutral-100 rounded-xl transition-colors border border-transparent hover:border-neutral-200 text-left"
           >
             <div className={`w-7 h-7 rounded-lg text-white flex items-center justify-center font-bold text-xs shadow-xs ${
-              activeProfile.role === 'owner' ? 'bg-[#D71920]' : 'bg-neutral-900'
+              (authRole || activeProfile.role) === 'owner' ? 'bg-[#D71920]' : 'bg-neutral-900'
             }`}>
-              {activeProfile.avatarInitial}
+              {authEmail ? authEmail.slice(0, 2).toUpperCase() : activeProfile.avatarInitial}
             </div>
             <div className="hidden sm:block">
               <div className="text-xs font-bold text-neutral-900 leading-tight truncate max-w-[120px]">
-                {activeProfile.name}
+                {authEmail || activeProfile.name}
               </div>
               <div className="text-[10px] text-neutral-400 font-medium">
-                {activeProfile.roleLabel}
+                {authEmail ? (authRole === 'owner' ? 'Owner' : authRole === 'admin' ? 'Admin' : 'Belum diberi role') : activeProfile.roleLabel}
               </div>
             </div>
             <ChevronDown className="w-3.5 h-3.5 text-neutral-400 hidden sm:block" />
@@ -386,6 +409,18 @@ export const Topbar: React.FC<TopbarProps> = ({
 
           {isProfileOpen && (
             <div className="absolute right-0 mt-2 w-64 bg-white rounded-2xl border border-neutral-200/90 shadow-xl overflow-hidden z-50 py-1.5 animate-in fade-in zoom-in-95 duration-150">
+              {authEmail ? (
+                <>
+                  <div className="px-4 py-3">
+                    <p className="text-xs font-bold text-neutral-900">{authEmail}</p>
+                    <p className="mt-1 text-[10px] text-neutral-500">Akses berdasarkan app_metadata.role: {authRole}</p>
+                  </div>
+                  <button type="button" onClick={onSignOut} className="flex w-full items-center gap-2.5 border-t border-neutral-100 px-4 py-2.5 text-xs font-semibold text-red-600 hover:bg-red-50">
+                    <LogOut className="h-3.5 w-3.5" /> Keluar dari Supabase
+                  </button>
+                </>
+              ) : (
+                <>
               <div className="px-4 py-2 border-b border-neutral-100">
                 <p className="text-xs font-bold text-neutral-900">Ganti Akun Operator (Multi-Admin)</p>
                 <p className="text-[10px] text-neutral-400">Pilih role untuk testing alur kerja workshop</p>
@@ -451,6 +486,8 @@ export const Topbar: React.FC<TopbarProps> = ({
                   <span>Kosongkan Semua Order</span>
                 </button>
               </div>
+                </>
+              )}
             </div>
           )}
         </div>
@@ -458,4 +495,3 @@ export const Topbar: React.FC<TopbarProps> = ({
     </header>
   );
 };
-

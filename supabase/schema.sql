@@ -1,6 +1,8 @@
 -- ==============================================================================
 -- MYPRINTIN ADMIN — SUPABASE POSTGRESQL PRODUCTION SCHEMA
 -- Multi-Admin Realtime Order & Production Management System
+-- After applying this base schema to an existing or fresh project, also apply
+-- migration_order_channels_and_master_data.sql for sales channels and master data.
 -- ==============================================================================
 
 -- 1. Enable UUID Extension
@@ -157,7 +159,7 @@ EXECUTE FUNCTION set_updated_at();
 
 -- ==============================================================================
 -- ROW LEVEL SECURITY (RLS)
--- Enables secure authenticated and public access for workshop dashboard
+-- Operational data is restricted to authenticated owner/admin accounts.
 -- ==============================================================================
 ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE orders ENABLE ROW LEVEL SECURITY;
@@ -167,32 +169,32 @@ ALTER TABLE order_printing ENABLE ROW LEVEL SECURITY;
 ALTER TABLE order_collar ENABLE ROW LEVEL SECURITY;
 ALTER TABLE order_activity_logs ENABLE ROW LEVEL SECURITY;
 
--- Workshop policies (allow all operations for public, anon, and authenticated)
-DROP POLICY IF EXISTS "Allow all operations for orders" ON orders;
-CREATE POLICY "Allow all operations for orders" ON orders FOR ALL TO public, anon, authenticated USING (true) WITH CHECK (true);
+DO $$
+DECLARE
+  target_table TEXT;
+BEGIN
+  FOREACH target_table IN ARRAY ARRAY[
+    'profiles',
+    'orders',
+    'order_items',
+    'order_designs',
+    'order_printing',
+    'order_collar',
+    'order_activity_logs'
+  ]
+  LOOP
+    EXECUTE format(
+      'CREATE POLICY %I ON public.%I FOR ALL TO authenticated USING ((auth.jwt() -> ''app_metadata'' ->> ''role'') IN (''owner'', ''admin'')) WITH CHECK ((auth.jwt() -> ''app_metadata'' ->> ''role'') IN (''owner'', ''admin''))',
+      'Owners and admins manage ' || target_table,
+      target_table
+    );
+  END LOOP;
+END;
+$$;
 
-DROP POLICY IF EXISTS "Allow all operations for order_items" ON order_items;
-CREATE POLICY "Allow all operations for order_items" ON order_items FOR ALL TO public, anon, authenticated USING (true) WITH CHECK (true);
-
-DROP POLICY IF EXISTS "Allow all operations for order_designs" ON order_designs;
-CREATE POLICY "Allow all operations for order_designs" ON order_designs FOR ALL TO public, anon, authenticated USING (true) WITH CHECK (true);
-
-DROP POLICY IF EXISTS "Allow all operations for order_printing" ON order_printing;
-CREATE POLICY "Allow all operations for order_printing" ON order_printing FOR ALL TO public, anon, authenticated USING (true) WITH CHECK (true);
-
-DROP POLICY IF EXISTS "Allow all operations for order_collar" ON order_collar;
-CREATE POLICY "Allow all operations for order_collar" ON order_collar FOR ALL TO public, anon, authenticated USING (true) WITH CHECK (true);
-
-DROP POLICY IF EXISTS "Allow all operations for order_activity_logs" ON order_activity_logs;
-CREATE POLICY "Allow all operations for order_activity_logs" ON order_activity_logs FOR ALL TO public, anon, authenticated USING (true) WITH CHECK (true);
-
-DROP POLICY IF EXISTS "Allow all operations for profiles" ON profiles;
-CREATE POLICY "Allow all operations for profiles" ON profiles FOR ALL TO public, anon, authenticated USING (true) WITH CHECK (true);
-
--- Permissions grants
-GRANT ALL ON ALL TABLES IN SCHEMA public TO anon, authenticated, postgres;
-GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO anon, authenticated, postgres;
-GRANT ALL ON ALL ROUTINES IN SCHEMA public TO anon, authenticated, postgres;
+REVOKE ALL ON ALL TABLES IN SCHEMA public FROM PUBLIC, anon;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.profiles, public.orders, public.order_items,
+  public.order_designs, public.order_printing, public.order_collar, public.order_activity_logs TO authenticated;
 
 -- ==============================================================================
 -- REALTIME REPLICATION (CRITICAL FOR MULTI-ADMIN SYNCHRONIZATION)
@@ -240,18 +242,31 @@ USING (bucket_id IN ('collar-references', 'order-designs'));
 
 DROP POLICY IF EXISTS "Allow collar references upload" ON storage.objects;
 CREATE POLICY "Allow collar references upload" 
-ON storage.objects FOR INSERT 
-WITH CHECK (bucket_id IN ('collar-references', 'order-designs'));
+ON storage.objects FOR INSERT TO authenticated
+WITH CHECK (
+  bucket_id IN ('collar-references', 'order-designs')
+  AND (auth.jwt() -> 'app_metadata' ->> 'role') IN ('owner', 'admin')
+);
 
 DROP POLICY IF EXISTS "Allow collar references update" ON storage.objects;
 CREATE POLICY "Allow collar references update" 
-ON storage.objects FOR UPDATE 
-USING (bucket_id IN ('collar-references', 'order-designs'));
+ON storage.objects FOR UPDATE TO authenticated
+USING (
+  bucket_id IN ('collar-references', 'order-designs')
+  AND (auth.jwt() -> 'app_metadata' ->> 'role') IN ('owner', 'admin')
+)
+WITH CHECK (
+  bucket_id IN ('collar-references', 'order-designs')
+  AND (auth.jwt() -> 'app_metadata' ->> 'role') IN ('owner', 'admin')
+);
 
 DROP POLICY IF EXISTS "Allow collar references delete" ON storage.objects;
 CREATE POLICY "Allow collar references delete" 
-ON storage.objects FOR DELETE 
-USING (bucket_id IN ('collar-references', 'order-designs'));
+ON storage.objects FOR DELETE TO authenticated
+USING (
+  bucket_id IN ('collar-references', 'order-designs')
+  AND (auth.jwt() -> 'app_metadata' ->> 'role') IN ('owner', 'admin')
+);
 
 -- ==============================================================================
 -- ATOMIC YEARLY ORDER NUMBER GENERATOR
@@ -303,6 +318,10 @@ DECLARE
   next_value BIGINT;
   allocated_number TEXT;
 BEGIN
+  IF COALESCE((auth.jwt() -> 'app_metadata' ->> 'role') NOT IN ('owner', 'admin'), TRUE) THEN
+    RAISE EXCEPTION 'Owner or admin role is required for order number allocation'
+      USING ERRCODE = '42501';
+  END IF;
   IF p_year IS NULL OR p_year < 2000 OR p_year > 9999 THEN
     RAISE EXCEPTION 'Invalid order number year: %', p_year
       USING ERRCODE = '22023';
@@ -372,6 +391,6 @@ $$;
 REVOKE ALL ON TABLE public.order_number_counters FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON TABLE public.order_number_allocations FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.next_order_number(INTEGER, TEXT, BOOLEAN) FROM PUBLIC, anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.next_order_number(INTEGER, TEXT, BOOLEAN) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.next_order_number(INTEGER, TEXT, BOOLEAN) TO authenticated;
 
 NOTIFY pgrst, 'reload schema';

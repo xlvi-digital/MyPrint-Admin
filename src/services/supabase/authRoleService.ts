@@ -77,7 +77,11 @@ export const authRoleService = {
   },
 
   setCurrentProfile(profile: UserProfile): void {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(profile));
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(profile));
+    } catch (error) {
+      console.warn('Could not save the active profile preference.', error);
+    }
   },
 
   getAllProfiles(): UserProfile[] {

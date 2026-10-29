@@ -15,22 +15,33 @@ import { SizeRecap } from "./pages/SizeRecap";
 import { PrintingQueue } from "./pages/PrintingQueue";
 import { PlayerRosterRecap } from "./pages/PlayerRosterRecap";
 import { Settings } from "./pages/Settings";
+import { MasterData } from "./pages/MasterData";
 import { ToastContainer, ToastMessage } from "./components/common/Toast";
 import { PrintableOrderDocument } from "./components/print/PrintableOrderDocument";
 import { PrintPreviewModal } from "./components/print/PrintPreviewModal";
 import { QuickOrderModal } from "./components/layout/QuickOrderModal";
 import { WhatsAppParserModal } from "./components/order/WhatsAppParserModal";
 import { generateOrderPdf } from "./services/pdfService";
+import { Login } from "./pages/Login";
+import { useSupabaseAuth } from "./hooks/useSupabaseAuth";
+import { isSupabaseConfigured } from "./services/supabase/client";
 
 type ViewMode = NavItemKey | "order-detail";
 
 export default function App() {
-  const initialLocalOrders = storageService.getOrders();
+  const auth = useSupabaseAuth();
+  const initialOrders = isSupabaseConfigured() ? [] : storageService.getOrders();
   const {
     orders,
     status: realtimeStatus,
     refreshOrders,
-  } = useRealtimeOrders(initialLocalOrders);
+    isLoading: isOrdersLoading,
+    isRefreshing: isOrdersRefreshing,
+    error: ordersError,
+  } = useRealtimeOrders(
+    initialOrders,
+    !isSupabaseConfigured() || Boolean(auth.session && auth.role !== "unassigned"),
+  );
 
   const [currentView, setCurrentView] = useState<ViewMode>("dashboard");
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
@@ -107,11 +118,17 @@ export default function App() {
         `Order duplikat berhasil dibuat dengan nomor #${res.order.orderNumber}`,
         "Duplikat Selesai",
       );
+      if (res.designsError) {
+        showToast("error", res.designsError, "Desain Duplikat Gagal");
+      }
+      if (res.assetsError) {
+        showToast("error", res.assetsError, "Gambar Duplikat Belum Tersimpan");
+      }
       handleViewOrder(res.order.id);
     }
   };
 
-  const handleDeleteOrder = async (id: string) => {
+  const handleDeleteOrder = async (id: string): Promise<boolean> => {
     const target = orders.find((o) => o.id === id);
     const res = await supabaseOrderService.deleteOrder(id);
     if (!res.success) {
@@ -120,13 +137,14 @@ export default function App() {
         res.error || "Gagal menghapus order dari database.",
         "Gagal Hapus",
       );
-      return;
+      return false;
     }
     refreshOrders();
     showToast("info", `Order #${target?.orderNumber || ""} berhasil dihapus.`);
     if (currentView === "order-detail") {
       setCurrentView("all-orders");
     }
+    return true;
   };
 
   const handleStatusChange = async (
@@ -218,6 +236,12 @@ export default function App() {
         ? "Tersimpan di Supabase"
         : "Tersimpan Lokal",
     );
+    if (result.designsError) {
+      showToast("error", result.designsError, "Order Tersimpan, Desain Gagal");
+    }
+    if (result.assetsError) {
+      showToast("error", result.assetsError, "Order Tersimpan, Gambar Belum Tersimpan");
+    }
     handleViewOrder(result.order.id);
     return result.order;
   };
@@ -283,6 +307,11 @@ export default function App() {
           subtitle:
             "Pesanan yang telah lolos quality control dan siap kirim / ambil",
         };
+      case "master-data":
+        return {
+          title: "Data Master",
+          subtitle: "Kelola pilihan bahan, ukuran jersey, produk, dan model kerah",
+        };
       case "order-detail": {
         const order = orders.find((o) => o.id === selectedOrderId);
         return {
@@ -309,6 +338,43 @@ export default function App() {
   const selectedOrder = orders.find((o) => o.id === selectedOrderId);
   const activePrintTarget =
     printingOrder || selectedOrder || (orders.length > 0 ? orders[0] : null);
+
+  if (isSupabaseConfigured() && auth.isLoading) {
+    return <main className="flex min-h-screen items-center justify-center bg-[#F8F9FA] text-sm font-semibold text-neutral-600">Memulihkan sesi Supabase...</main>;
+  }
+  if (isSupabaseConfigured() && !auth.session) {
+    return <Login sessionError={auth.error} />;
+  }
+  if (isSupabaseConfigured() && auth.role === "unassigned") {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-[#F8F9FA] px-4">
+        <section className="w-full max-w-md rounded-3xl border border-neutral-200 bg-white p-6 text-center shadow-xl sm:p-8">
+          <h1 className="text-xl font-black text-neutral-900">Akses belum diberikan</h1>
+          <p className="mt-3 text-sm leading-relaxed text-neutral-600">
+            Akun {auth.session?.user.email} belum memiliki role <code>owner</code> atau <code>admin</code> pada <code>app_metadata</code>.
+            Minta pemilik project mengatur role melalui Supabase sebelum menggunakan aplikasi.
+          </p>
+          <button
+            type="button"
+            onClick={async () => {
+              try {
+                await auth.signOut();
+              } catch (signOutError) {
+                showToast(
+                  "error",
+                  signOutError instanceof Error ? signOutError.message : "Gagal mengakhiri sesi Supabase.",
+                );
+              }
+            }}
+            className="mt-5 rounded-xl bg-[#D71920] px-4 py-2.5 text-sm font-bold text-white hover:bg-[#b8141a]"
+          >
+            Keluar
+          </button>
+          <ToastContainer toasts={toasts} onDismiss={handleDismissToast} />
+        </section>
+      </main>
+    );
+  }
 
   return (
     <>
@@ -345,6 +411,18 @@ export default function App() {
         onOpenWhatsAppModal={() => setIsWhatsAppModalOpen(true)}
         realtimeStatus={realtimeStatus}
         onRefreshOrders={refreshOrders}
+        isRefreshing={isOrdersRefreshing}
+        refreshError={ordersError}
+        authEmail={auth.session?.user.email || undefined}
+        authRole={auth.role}
+        onSignOut={async () => {
+          try {
+            await auth.signOut();
+            showToast("success", "Sesi Supabase berhasil diakhiri.");
+          } catch (signOutError) {
+            showToast("error", signOutError instanceof Error ? signOutError.message : "Gagal mengakhiri sesi Supabase.");
+          }
+        }}
       >
         {currentView === "dashboard" && (
           <Dashboard
@@ -374,6 +452,10 @@ export default function App() {
             onDeleteOrder={handleDeleteOrder}
             onCreateNew={() => setIsQuickOrderModalOpen(true)}
             initialFilterStatus="ALL"
+            isLoading={isOrdersLoading}
+            isRefreshing={isOrdersRefreshing}
+            loadError={ordersError}
+            onRefresh={() => void refreshOrders()}
           />
         )}
 
@@ -417,11 +499,16 @@ export default function App() {
             onDeleteOrder={handleDeleteOrder}
             onCreateNew={() => setIsQuickOrderModalOpen(true)}
             initialFilterStatus="SELESAI"
+            isLoading={isOrdersLoading}
+            isRefreshing={isOrdersRefreshing}
+            loadError={ordersError}
+            onRefresh={() => void refreshOrders()}
           />
         )}
 
-        {currentView === "order-detail" && selectedOrder && (
+        {currentView === "order-detail" && !isOrdersLoading && selectedOrder && (
           <OrderDetail
+            key={selectedOrder.id}
             order={selectedOrder}
             onBack={() => setCurrentView("all-orders")}
             onEdit={() => {}}
@@ -438,8 +525,16 @@ export default function App() {
                   res.error || "Gagal memperbarui order di database.",
                   "Gagal Update",
                 );
+                return false;
               } else {
                 refreshOrders();
+                if (res.designsError) {
+                  showToast("error", res.designsError, "Order Tersimpan, Desain Gagal");
+                  return false;
+                }
+                if (res.assetsError) {
+                  showToast("error", res.assetsError, "Order Tersimpan, Gambar Belum Tersimpan");
+                }
                 showToast(
                   "success",
                   "Data order berhasil diperbarui di database.",
@@ -447,9 +542,34 @@ export default function App() {
                     ? "Tersimpan ke Supabase"
                     : "Tersimpan Lokal",
                 );
+                return true;
               }
             }}
           />
+        )}
+        {currentView === "order-detail" && isOrdersLoading && (
+          <section className="mx-auto max-w-4xl rounded-2xl border border-neutral-200 bg-white p-6">
+            <div className="animate-pulse space-y-4" aria-label="Memuat detail order">
+              <div className="h-7 w-48 rounded bg-neutral-200" />
+              <div className="h-20 rounded-xl bg-neutral-100" />
+              <div className="h-48 rounded-xl bg-neutral-100" />
+              <div className="h-32 rounded-xl bg-neutral-100" />
+            </div>
+          </section>
+        )}
+        {currentView === "order-detail" && !isOrdersLoading && !selectedOrder && (
+          <section className="mx-auto max-w-4xl rounded-2xl border border-neutral-200 bg-white p-6">
+            <div className="space-y-3 text-center">
+              <p className="text-sm font-semibold text-neutral-700">
+                {ordersError ? `Detail order belum dapat dimuat: ${ordersError}` : "Order tidak ditemukan."}
+              </p>
+              <button type="button" onClick={() => void refreshOrders()} disabled={isOrdersRefreshing}
+                className="inline-flex items-center gap-2 rounded-xl bg-[#D71920] px-4 py-2 text-xs font-bold text-white disabled:opacity-50">
+                {isOrdersRefreshing ? <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white border-t-transparent" /> : null}
+                {isOrdersRefreshing ? "Memuat..." : "Coba muat ulang"}
+              </button>
+            </div>
+          </section>
         )}
 
         {currentView === "settings" && (
@@ -459,6 +579,8 @@ export default function App() {
             onShowToast={showToast}
           />
         )}
+
+        {currentView === "master-data" && <MasterData />}
       </AppShell>
 
       {/* Global Quick Order Modal */}

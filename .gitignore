@@ -7,3 +7,7 @@ coverage/
 .env*
 !.env.example
 supabase/
+!supabase/
+supabase/*
+!supabase/migration_order_channels_and_master_data.sql
+!supabase/migration_secure_master_and_order_designs.sql

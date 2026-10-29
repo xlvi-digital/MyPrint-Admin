@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { 
   UploadCloud, 
   Image as ImageIcon, 
@@ -10,8 +10,9 @@ import {
   ExternalLink,
   Eye
 } from 'lucide-react';
-import { COMMON_COLLARS, CollarSpec } from '../../types/order';
+import { CollarSpec } from '../../types/order';
 import { supabaseStorageService, MAX_FILE_SIZE_BYTES } from '../../services/supabase/storageService';
+import { useMasterData } from '../../hooks/useMasterData';
 
 interface CollarUploadControlProps {
   orderId?: string;
@@ -35,11 +36,18 @@ export const CollarUploadControl: React.FC<CollarUploadControlProps> = ({
   const [isUploading, setIsUploading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [showFullPreviewModal, setShowFullPreviewModal] = useState(false);
+  const masterData = useMasterData();
 
   // Check if current model is among standard choices or custom
-  const isPredefined = COMMON_COLLARS.filter(c => c !== 'CUSTOM').includes(value.modelName);
-  const [isCustomMode, setIsCustomMode] = useState<boolean>(!isPredefined && Boolean(value.modelName));
-  const [customModelText, setCustomModelText] = useState<string>(!isPredefined ? value.modelName : '');
+  const [isCustomMode, setIsCustomMode] = useState<boolean>(true);
+  const [customModelText, setCustomModelText] = useState<string>(value.modelName === 'CUSTOM' ? '' : value.modelName);
+
+  useEffect(() => {
+    if (masterData.data.collar_models.length === 0) return;
+    const isKnown = masterData.data.collar_models.some(item => item.name === value.modelName);
+    setIsCustomMode(value.modelName === 'CUSTOM' || !isKnown);
+    if (!isKnown && value.modelName !== 'CUSTOM') setCustomModelText(value.modelName);
+  }, [masterData.data.collar_models, value.modelName]);
 
   // Handle Dropdown Change
   const handleModelSelectChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
@@ -207,11 +215,10 @@ export const CollarUploadControl: React.FC<CollarUploadControlProps> = ({
               disabled={disabled || isUploading}
               className="w-full px-3.5 py-2.5 text-xs rounded-xl border border-neutral-200/90 bg-white font-bold text-neutral-800 outline-none focus:border-[#D71920] focus:ring-2 focus:ring-red-500/10 transition-all cursor-pointer disabled:opacity-50"
             >
-              {COMMON_COLLARS.map(collar => (
-                <option key={collar} value={collar}>
-                  {collar === 'CUSTOM' ? '★ MODEL CUSTOM (KETIK SENDIRI)...' : collar}
-                </option>
-              ))}
+              {masterData.options('collar_models', value.modelName, Boolean(orderId))
+                .filter(item => item.name !== 'CUSTOM')
+                .map(item => <option key={item.id} value={item.name}>{item.name}</option>)}
+              <option value="CUSTOM">★ MODEL CUSTOM (KETIK SENDIRI)...</option>
             </select>
           </div>
 

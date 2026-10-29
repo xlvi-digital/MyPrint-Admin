@@ -2,10 +2,13 @@ import { getSupabaseClient, isSupabaseConfigured } from './client';
 
 export const COLLAR_BUCKET_PRIMARY = 'collar-references';
 export const COLLAR_BUCKET_FALLBACK = 'order-designs';
+export const ORDER_DESIGN_BUCKET = 'order-designs-private';
 
 export const MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024; // 5MB
+export const MAX_DESIGN_FILE_SIZE_BYTES = 10 * 1024 * 1024;
 export const ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
 export const ALLOWED_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.webp'];
+const signedOrderDesignUrlCache = new Map<string, { url: string; expiresAt: number }>();
 
 export interface FileValidationResult {
   valid: boolean;
@@ -20,6 +23,15 @@ export interface UploadCollarResult {
   bucket?: string;
   error?: string;
   isLocalOnly?: boolean;
+}
+
+export interface UploadDesignResult {
+  success: boolean;
+  imageUrl?: string;
+  storagePath?: string;
+  storageBucket?: string;
+  isLocalOnly?: boolean;
+  error?: string;
 }
 
 export const supabaseStorageService = {
@@ -55,9 +67,7 @@ export const supabaseStorageService = {
     return { valid: true, fileSizeFormatted: formattedSize };
   },
 
-  /**
-   * Convert File into local Base64 / Data URL (used for local fallback or instant preview)
-   */
+  /** Convert a selected file into a temporary preview URL; this is never persisted. */
   async fileToDataUrl(file: File): Promise<string> {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -87,24 +97,11 @@ export const supabaseStorageService = {
 
     const client = getSupabaseClient();
 
-    // If Supabase is not configured or in offline demo mode, fallback to data URL
     if (!client || !isSupabaseConfigured()) {
-      try {
-        const localDataUrl = await this.fileToDataUrl(file);
-        const virtualPath = `local/orders/${orderId}/collar/${Date.now()}-${file.name.replace(/[^a-zA-Z0-9.-]/g, '_')}`;
-        return {
-          success: true,
-          publicUrl: localDataUrl,
-          imagePath: virtualPath,
-          bucket: 'local',
-          isLocalOnly: true,
-        };
-      } catch (err: any) {
-        return {
-          success: false,
-          error: `Gagal membaca file lokal: ${err.message}`,
-        };
-      }
+      return {
+        success: false,
+        error: 'Supabase belum dikonfigurasi. Gambar kerah tidak dapat disimpan tanpa Supabase Storage.',
+      };
     }
 
     // Prepare path: orders/{order_id}/collar/{filename}
@@ -155,24 +152,108 @@ export const supabaseStorageService = {
       };
     } catch (err: any) {
       console.error('[Supabase Storage] Exception during collar upload:', err);
-      // If network / bucket policy fails, fallback to local dataUrl so user's work isn't lost
-      try {
-        const localDataUrl = await this.fileToDataUrl(file);
-        return {
-          success: true,
-          publicUrl: localDataUrl,
-          imagePath: `fallback/orders/${orderId}/collar/${timestamp}-${cleanFileName}`,
-          bucket: 'fallback_local',
-          isLocalOnly: true,
-          error: `Supabase Storage gagal (${err.message}), tersimpan sementara di browser.`,
-        };
-      } catch {
-        return {
-          success: false,
-          error: `Gagal mengunggah gambar ke Supabase Storage: ${err.message}`,
-        };
-      }
+      return {
+        success: false,
+        error: `Gagal mengunggah gambar ke Supabase Storage: ${err.message}`,
+      };
     }
+  },
+
+  validateDesignFile(file: File): FileValidationResult {
+    const formattedSize = `${(file.size / (1024 * 1024)).toFixed(2)} MB`;
+    if (file.size > MAX_DESIGN_FILE_SIZE_BYTES) {
+      return { valid: false, error: `Ukuran file ${formattedSize} melebihi batas maksimum desain 10 MB.`, fileSizeFormatted: formattedSize };
+    }
+    const hasValidType = ALLOWED_IMAGE_TYPES.includes(file.type.toLowerCase());
+    const hasValidExtension = ALLOWED_EXTENSIONS.some(extension => file.name.toLowerCase().endsWith(extension));
+    if (!hasValidType && !hasValidExtension) {
+      return { valid: false, error: `Format ${file.name} tidak didukung. Pilih JPG, JPEG, PNG, atau WebP.`, fileSizeFormatted: formattedSize };
+    }
+    return { valid: true, fileSizeFormatted: formattedSize };
+  },
+
+  async uploadOrderDesign(orderId: string, file: File): Promise<UploadDesignResult> {
+    const validation = this.validateDesignFile(file);
+    if (!validation.valid) return { success: false, error: validation.error };
+
+    const client = getSupabaseClient();
+    if (!client || !isSupabaseConfigured()) {
+      return {
+        success: false,
+        error: 'Supabase belum dikonfigurasi. Gambar desain tidak dapat disimpan tanpa Supabase Storage.',
+      };
+    }
+
+    const cleanFileName = file.name.toLowerCase().replace(/[^a-z0-9.-]/g, '_');
+    const uniqueId = typeof crypto !== 'undefined' && 'randomUUID' in crypto
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    const storagePath = `orders/${orderId}/designs/${uniqueId}-${cleanFileName}`;
+    const extension = file.name.toLowerCase().match(/\.[^.]+$/)?.[0];
+    const contentType = ALLOWED_IMAGE_TYPES.includes(file.type.toLowerCase())
+      ? file.type.toLowerCase()
+      : extension === '.png' ? 'image/png'
+        : extension === '.webp' ? 'image/webp'
+          : 'image/jpeg';
+    const { error: uploadError } = await client.storage
+      .from(ORDER_DESIGN_BUCKET)
+      .upload(storagePath, file, {
+        cacheControl: '3600',
+        upsert: false,
+        contentType,
+      });
+    if (uploadError) {
+      return {
+        success: false,
+        error: `Gagal mengunggah ${file.name} ke Supabase Storage: ${uploadError.message}`,
+      };
+    }
+
+    const { data: signedUrl, error: signedUrlError } = await client.storage
+      .from(ORDER_DESIGN_BUCKET)
+      .createSignedUrl(storagePath, 60 * 60 * 24 * 7);
+    if (signedUrlError || !signedUrl?.signedUrl) {
+      const { error: cleanupError } = await client.storage.from(ORDER_DESIGN_BUCKET).remove([storagePath]);
+      return {
+        success: false,
+        error: `Gagal membuat tautan gambar ${file.name}: ${signedUrlError?.message || 'URL bertanda tangan tidak tersedia.'}${cleanupError ? ` File sementara juga gagal dibersihkan: ${cleanupError.message}` : ''}`,
+      };
+    }
+
+    return {
+      success: true,
+      imageUrl: signedUrl.signedUrl,
+      storagePath,
+      storageBucket: ORDER_DESIGN_BUCKET,
+      isLocalOnly: false,
+    };
+  },
+
+  async createSignedOrderDesignUrl(bucket: string, storagePath: string): Promise<string> {
+    const client = getSupabaseClient();
+    if (!client || !isSupabaseConfigured()) {
+      throw new Error('Supabase belum dikonfigurasi untuk membaca desain tersimpan.');
+    }
+    const cacheKey = `${bucket}:${storagePath}`;
+    const cached = signedOrderDesignUrlCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now() + 60_000) return cached.url;
+
+    const { data, error } = await client.storage.from(bucket).createSignedUrl(storagePath, 60 * 60 * 24 * 7);
+    if (error || !data?.signedUrl) {
+      throw new Error(`Gagal membuat URL desain tersimpan: ${error?.message || 'URL tidak tersedia.'}`);
+    }
+    signedOrderDesignUrlCache.set(cacheKey, {
+      url: data.signedUrl,
+      expiresAt: Date.now() + 6 * 24 * 60 * 60 * 1000,
+    });
+    return data.signedUrl;
+  },
+
+  async deleteOrderDesignFile(bucket: string, storagePath: string): Promise<void> {
+    const client = getSupabaseClient();
+    if (!client || !isSupabaseConfigured()) return;
+    const { error } = await client.storage.from(bucket).remove([storagePath]);
+    if (error) throw new Error(`Gagal menghapus file desain dari Supabase Storage: ${error.message}`);
   },
 
   /**

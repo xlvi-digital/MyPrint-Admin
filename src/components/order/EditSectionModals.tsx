@@ -1,31 +1,61 @@
 import React, { useState, useEffect } from 'react';
-import { X, Check, User, Shirt, FileText, Printer, Sparkles } from 'lucide-react';
-import { Order, Customer, Product, CollarSpec, COMMON_MATERIALS, COMMON_COLLARS } from '../../types/order';
+import { X, Check, LoaderCircle, User, Shirt, FileText, Printer, Sparkles } from 'lucide-react';
+import { Order, Customer, Product, CollarSpec } from '../../types/order';
 import { CollarUploadControl } from './CollarUploadControl';
 import { supabaseOrderService } from '../../services/supabase/orderService';
+import { SalesOrderFields } from './SalesOrderFields';
+import { useMasterData } from '../../hooks/useMasterData';
 
 interface EditModalBaseProps {
   isOpen: boolean;
   onClose: () => void;
-  onSave: (updatedOrder: Order) => void;
+  onSave: (updatedOrder: Order) => Promise<void> | void;
   order: Order;
 }
 
 export const EditCustomerModal: React.FC<EditModalBaseProps> = ({ isOpen, onClose, onSave, order }) => {
   const [customer, setCustomer] = useState<Customer>({ ...order.customer });
+  const [salesChannel, setSalesChannel] = useState(order.salesChannel || 'Offline');
+  const [externalOrderNumber, setExternalOrderNumber] = useState(order.externalOrderNumber || '');
+  const [validationError, setValidationError] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!isOpen) return;
+    setCustomer({ ...order.customer });
+    setSalesChannel(order.salesChannel || 'Offline');
+    setExternalOrderNumber(order.externalOrderNumber || '');
+    setValidationError('');
+    setSaveError(null);
+  }, [isOpen, order]);
   if (!isOpen) return null;
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    onSave({
-      ...order,
-      customer: {
-        ...customer,
-        name: customer.name.toUpperCase(),
-        teamName: customer.teamName?.toUpperCase(),
-      },
-    });
-    onClose();
+    if (isSaving) return;
+    if (!externalOrderNumber.trim()) {
+      setValidationError('Nomor pesanan wajib diisi.');
+      return;
+    }
+    setIsSaving(true);
+    setSaveError(null);
+    try {
+      await onSave({
+        ...order,
+        salesChannel,
+        externalOrderNumber: externalOrderNumber.trim(),
+        customer: {
+          ...customer,
+          name: customer.name.toUpperCase(),
+          teamName: customer.teamName?.toUpperCase(),
+        },
+      });
+      onClose();
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : 'Gagal menyimpan perubahan pelanggan.');
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   return (
@@ -38,7 +68,7 @@ export const EditCustomerModal: React.FC<EditModalBaseProps> = ({ isOpen, onClos
               Edit Data Pelanggan #{order.orderNumber}
             </h3>
           </div>
-          <button onClick={onClose} className="p-1 text-neutral-400 hover:text-neutral-700">
+          <button type="button" onClick={onClose} disabled={isSaving} className="p-1 text-neutral-400 hover:text-neutral-700 disabled:opacity-50">
             <X className="w-4 h-4" />
           </button>
         </div>
@@ -97,6 +127,19 @@ export const EditCustomerModal: React.FC<EditModalBaseProps> = ({ isOpen, onClos
             </div>
           </div>
 
+          <SalesOrderFields
+            salesChannel={salesChannel}
+            externalOrderNumber={externalOrderNumber}
+            onChange={(channel, number) => {
+              setSalesChannel(channel);
+              setExternalOrderNumber(number);
+              setValidationError('');
+            }}
+            compact
+          />
+          {validationError && <p className="text-[11px] font-semibold text-red-600">{validationError}</p>}
+          {saveError && <p role="alert" className="rounded-lg border border-red-200 bg-red-50 p-2 text-[11px] text-red-700">{saveError}</p>}
+
           <div>
             <label className="block font-semibold text-neutral-700 mb-1">Alamat Pengiriman</label>
             <textarea
@@ -108,14 +151,16 @@ export const EditCustomerModal: React.FC<EditModalBaseProps> = ({ isOpen, onClos
           </div>
 
           <div className="pt-2 flex items-center justify-end gap-2">
-            <button type="button" onClick={onClose} className="px-4 py-2 font-semibold text-neutral-600">
+            <button type="button" onClick={onClose} disabled={isSaving} className="px-4 py-2 font-semibold text-neutral-600 disabled:opacity-50">
               Batal
             </button>
             <button
               type="submit"
-              className="px-4 py-2 bg-[#D71920] text-white font-bold rounded-xl hover:bg-[#b8141a]"
+              disabled={isSaving}
+              className="inline-flex items-center gap-1.5 px-4 py-2 bg-[#D71920] text-white font-bold rounded-xl hover:bg-[#b8141a] disabled:opacity-50"
             >
-              Simpan Perubahan
+              {isSaving && <LoaderCircle className="h-3.5 w-3.5 animate-spin" />}
+              {isSaving ? 'Menyimpan...' : 'Simpan Perubahan'}
             </button>
           </div>
         </form>
@@ -126,22 +171,40 @@ export const EditCustomerModal: React.FC<EditModalBaseProps> = ({ isOpen, onClos
 
 export const EditProductModal: React.FC<EditModalBaseProps> = ({ isOpen, onClose, onSave, order }) => {
   const [product, setProduct] = useState<Product>({ ...order.product });
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const masterData = useMasterData();
+  useEffect(() => {
+    if (isOpen) {
+      setProduct({ ...order.product });
+      setSaveError(null);
+    }
+  }, [isOpen, order]);
   if (!isOpen) return null;
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSaving) return;
     const totalPrice = product.totalQuantity * product.unitPrice;
     const remainingPayment = Math.max(0, totalPrice - product.downPayment);
 
-    onSave({
-      ...order,
-      product: {
-        ...product,
-        totalPrice,
-        remainingPayment,
-      },
-    });
-    onClose();
+    setIsSaving(true);
+    setSaveError(null);
+    try {
+      await onSave({
+        ...order,
+        product: {
+          ...product,
+          totalPrice,
+          remainingPayment,
+        },
+      });
+      onClose();
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : 'Gagal menyimpan perubahan produk.');
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   return (
@@ -154,7 +217,7 @@ export const EditProductModal: React.FC<EditModalBaseProps> = ({ isOpen, onClose
               Edit Spesifikasi & Biaya #{order.orderNumber}
             </h3>
           </div>
-          <button onClick={onClose} className="p-1 text-neutral-400 hover:text-neutral-700">
+          <button type="button" onClick={onClose} disabled={isSaving} className="p-1 text-neutral-400 hover:text-neutral-700 disabled:opacity-50">
             <X className="w-4 h-4" />
           </button>
         </div>
@@ -167,11 +230,9 @@ export const EditProductModal: React.FC<EditModalBaseProps> = ({ isOpen, onClose
               onChange={e => setProduct({ ...product, productType: e.target.value })}
               className="w-full px-3 py-2 rounded-xl border border-neutral-200 outline-none font-semibold"
             >
-              <option value="Jersey Sublime">Jersey Sublime</option>
-              <option value="Jersey Sublime Setelan">Jersey Sublime Setelan</option>
-              <option value="Jersey Running / Singlet">Jersey Running / Singlet</option>
-              <option value="Jaket / Hoodie Sublime">Jaket / Hoodie Sublime</option>
-              <option value="Kaos Event Sublime">Kaos Event Sublime</option>
+              {masterData.options('product_types', product.productType).map(item => (
+                <option key={item.id} value={item.name}>{item.name}</option>
+              ))}
             </select>
           </div>
 
@@ -183,10 +244,8 @@ export const EditProductModal: React.FC<EditModalBaseProps> = ({ isOpen, onClose
                 onChange={e => setProduct({ ...product, material: e.target.value })}
                 className="w-full px-3 py-2 rounded-xl border border-neutral-200 outline-none font-bold text-[#D71920]"
               >
-                {COMMON_MATERIALS.filter(m => m !== 'Custom').map(m => (
-                  <option key={m} value={m}>
-                    {m}
-                  </option>
+                {masterData.options('materials', product.material).map(item => (
+                  <option key={item.id} value={item.name}>{item.name}</option>
                 ))}
               </select>
             </div>
@@ -248,14 +307,17 @@ export const EditProductModal: React.FC<EditModalBaseProps> = ({ isOpen, onClose
           </div>
 
           <div className="pt-2 flex items-center justify-end gap-2">
-            <button type="button" onClick={onClose} className="px-4 py-2 font-semibold text-neutral-600">
+            {saveError && <p role="alert" className="mr-auto text-[11px] text-red-700">{saveError}</p>}
+            <button type="button" onClick={onClose} disabled={isSaving} className="px-4 py-2 font-semibold text-neutral-600 disabled:opacity-50">
               Batal
             </button>
             <button
               type="submit"
-              className="px-4 py-2 bg-[#D71920] text-white font-bold rounded-xl hover:bg-[#b8141a]"
+              disabled={isSaving}
+              className="inline-flex items-center gap-1.5 px-4 py-2 bg-[#D71920] text-white font-bold rounded-xl hover:bg-[#b8141a] disabled:opacity-50"
             >
-              Simpan Produk
+              {isSaving && <LoaderCircle className="h-3.5 w-3.5 animate-spin" />}
+              {isSaving ? 'Menyimpan...' : 'Simpan Produk'}
             </button>
           </div>
         </form>
@@ -382,4 +444,3 @@ export const EditCollarModal: React.FC<EditModalBaseProps> = ({ isOpen, onClose,
     </div>
   );
 };
-

@@ -1,5 +1,5 @@
 import React, { useRef } from 'react';
-import { PlayerDetail, STANDARD_SIZES } from '../../types/order';
+import { PlayerDetail } from '../../types/order';
 import { 
   Users, 
   Plus, 
@@ -12,6 +12,9 @@ import {
   Sparkles
 } from 'lucide-react';
 import { exportPlayersToCsv } from '../../utils/csvHelper';
+import { useMasterData } from '../../hooks/useMasterData';
+import { groupRosterPlayers, getRosterSizeTotals, getRosterTotalQuantity } from '../../utils/rosterGrouping';
+import { RosterSizeSummary } from './RosterSizeSummary';
 
 interface PlayerTableProps {
   players: PlayerDetail[];
@@ -21,6 +24,7 @@ interface PlayerTableProps {
   defaultSleeve: string;
   onOpenImportCsv: () => void;
   orderNumber: string;
+  preserveLegacySizes?: boolean;
 }
 
 export const PlayerTable: React.FC<PlayerTableProps> = ({
@@ -31,12 +35,16 @@ export const PlayerTable: React.FC<PlayerTableProps> = ({
   defaultSleeve,
   onOpenImportCsv,
   orderNumber,
+  preserveLegacySizes = true,
 }) => {
   const tableRef = useRef<HTMLTableElement>(null);
+  const masterData = useMasterData();
 
   // Compute total Qty across rows
-  const computedTotalQty = players.reduce((sum, p) => sum + (Number(p.quantity) || 0), 0);
+  const computedTotalQty = getRosterTotalQuantity(players);
   const isQtyMatch = computedTotalQty === targetTotalQty;
+  const groupedPlayers = groupRosterPlayers(players);
+  const sizeRecap = getRosterSizeTotals(players);
 
   const handleAddRow = (initialData?: Partial<PlayerDetail>) => {
     const newPlayer: PlayerDetail = {
@@ -151,7 +159,7 @@ export const PlayerTable: React.FC<PlayerTableProps> = ({
             title="Import dari Excel / CSV"
           >
             <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
-            <span>Import CSV</span>
+            <span>Import Excel</span>
           </button>
 
           <button
@@ -213,11 +221,16 @@ export const PlayerTable: React.FC<PlayerTableProps> = ({
                 </td>
               </tr>
             ) : (
-              players.map((player, index) => (
-                <tr 
-                  key={player.id} 
-                  className="hover:bg-neutral-50/70 transition-colors group"
-                >
+              groupedPlayers.map(({ player, group }, index) => (
+                <React.Fragment key={player.id}>
+                {(index === 0 || groupedPlayers[index - 1].group !== group) && (
+                  <tr className="bg-neutral-50 text-neutral-700">
+                    <td colSpan={8} className="border-y border-neutral-200 px-3 py-2 text-xs font-bold">
+                      Kelompok {group} — {sizeRecap[group] || 0} pcs
+                    </td>
+                  </tr>
+                )}
+                <tr className="group transition-colors hover:bg-neutral-50/70">
                   {/* Row Number */}
                   <td className="py-2 px-3 text-center text-neutral-400 font-mono text-[11px] font-semibold">
                     {index + 1}
@@ -259,10 +272,8 @@ export const PlayerTable: React.FC<PlayerTableProps> = ({
                         onKeyDown={e => handleKeyDown(e, player.id, 'size')}
                         className="w-full text-center px-2 py-1.5 rounded-lg border border-transparent hover:border-neutral-200 focus:border-[#D71920] focus:bg-white outline-none font-bold text-neutral-900 transition-all cursor-pointer"
                       >
-                        {STANDARD_SIZES.map(s => (
-                          <option key={s} value={s}>
-                            {s}
-                          </option>
+                        {masterData.options('jersey_sizes', player.size, preserveLegacySizes).map(size => (
+                          <option key={size.id} value={size.code || size.name}>{size.name}</option>
                         ))}
                       </select>
                     </div>
@@ -339,11 +350,14 @@ export const PlayerTable: React.FC<PlayerTableProps> = ({
                     </div>
                   </td>
                 </tr>
+                </React.Fragment>
               ))
             )}
           </tbody>
         </table>
       </div>
+
+      <RosterSizeSummary players={players} />
 
       {/* Bottom Table Verification & Synchronizer */}
       <div className="mt-4 pt-3 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 bg-neutral-50/70 p-3.5 rounded-xl border border-neutral-200/70">

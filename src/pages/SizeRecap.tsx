@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Order, STANDARD_SIZES } from '../types/order';
 import { calculateSizeRecap } from '../utils/calculations';
 import { Layers, Shirt, Download, Filter, Eye, Printer } from 'lucide-react';
+import { useMasterData } from '../hooks/useMasterData';
 
 interface SizeRecapProps {
   orders: Order[];
@@ -15,12 +16,15 @@ export const SizeRecap: React.FC<SizeRecapProps> = ({
   onPrintOrder,
 }) => {
   const [selectedOrderId, setSelectedOrderId] = useState<string>('ALL');
+  const masterData = useMasterData();
+  const configuredSizes = masterData.data.jersey_sizes.map(size => size.code || size.name);
+  const sizeOrder = configuredSizes.length > 0 ? configuredSizes : STANDARD_SIZES;
 
   const filteredOrders = selectedOrderId === 'ALL'
     ? orders
     : orders.filter(o => o.id === selectedOrderId);
 
-  const { recap, totalQty } = calculateSizeRecap(filteredOrders);
+  const { recap, totalQty } = calculateSizeRecap(filteredOrders, sizeOrder);
 
   const handleExportCsv = () => {
     const headers = ['Ukuran', 'Kuantitas (Pcs)'];
@@ -138,7 +142,7 @@ export const SizeRecap: React.FC<SizeRecapProps> = ({
             </thead>
             <tbody className="divide-y divide-neutral-200/60 font-medium">
               {filteredOrders.map(order => {
-                const singleRecap = calculateSizeRecap([order]);
+                const singleRecap = calculateSizeRecap([order], sizeOrder);
                 const sizeSummary = singleRecap.recap
                   .map(r => `${r.size}: ${r.quantity}`)
                   .join(' · ');

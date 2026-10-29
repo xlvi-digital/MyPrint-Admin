@@ -8,6 +8,8 @@ export type ProductionStatus =
   | 'FINISHING' 
   | 'SELESAI';
 
+export type SalesChannel = 'Offline' | 'Shopee' | 'Tokopedia';
+
 export interface Customer {
   name: string;
   phone: string;
@@ -53,6 +55,8 @@ export interface DesignAsset {
   label: string; // "Desain Depan", "Desain Belakang", "Lengan Kiri", "Lengan Kanan", "Celana", "Detail Kerah", "Referensi"
   dataUrl: string;
   fileName?: string;
+  storagePath?: string;
+  storageBucket?: string;
 }
 
 export interface CollarSpec {
@@ -73,6 +77,8 @@ export interface WorkflowSignoff {
 export interface Order {
   id: string;
   orderNumber: string;
+  salesChannel?: SalesChannel;
+  externalOrderNumber?: string;
   customer: Customer;
   product: Product;
   players: PlayerDetail[];

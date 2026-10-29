@@ -257,113 +257,156 @@ export interface PastedRosterIssue {
   reason: string;
 }
 
+export interface ParsedPastedRosterRow {
+  lineNumber: number;
+  line: string;
+  player: ParsedPastedPlayer;
+  status: 'valid' | 'review';
+  reason?: string;
+}
+
 export interface PastedRosterParseResult {
   players: ParsedPastedPlayer[];
   issues: PastedRosterIssue[];
+  rows: ParsedPastedRosterRow[];
 }
 
-const PASTED_SIZE_PATTERN = /^(XXXL|3XL|4XL|XXL|2XL|XL|XS|S|M|L)$/i;
+const PASTED_SIZE_PATTERN = /^(CUSTOM|XXXL|3XL|4XL|XXL|2XL|XL|XS|S|M|L)$/i;
 
 function canonicalizeSize(size: string): string {
   const upper = size.toUpperCase();
+  if (upper === 'CUSTOM') return 'Custom';
   if (upper === '2XL') return 'XXL';
   if (upper === 'XXXL') return '3XL';
   return upper;
 }
 
-function parsePlayerPrefix(prefix: string): { name: string; number: string } | null {
-  const match = prefix.trim().match(/^(.*?)\s*[-–—]?\s*#?(\d{1,3})\s*$/);
-  const name = match?.[1]?.replace(/[\s\-–—]+$/, '').trim();
-  if (!match || !name) return null;
-  return { name, number: match[2] };
+const cleanRosterText = (value: string) => value
+  .replace(/^[\s,;:.-]+|[\s,;:.-]+$/g, '')
+  .replace(/\s+/g, ' ')
+  .trim();
+
+function extractRosterAnnotations(line: string): { content: string; annotations: string[] } {
+  const annotations: string[] = [];
+  const content = line.replace(/\(([^()]*)\)/g, (_group, value: string) => {
+    annotations.push(value.trim());
+    return ' ';
+  });
+  return { content: cleanRosterText(content), annotations };
 }
 
-function parsePastedTextLine(line: string): ParsedPastedPlayer | null {
+function parsePastedTextLine(line: string): { player: ParsedPastedPlayer; uncertain: boolean } {
   const cleanLine = line
     .replace(/^\s*\[\d+\]\s*/, '')
     .replace(/^\s*\d+\s*[.)-]\s*/, '')
-    .replace(/^\s*\d+\s+(?=[\p{L}])/u, '')
+    .replace(/^\s*\d+\s+(?=[\p{L}@])/u, '')
     .trim();
+  const { content: unannotated, annotations } = extractRosterAnnotations(cleanLine);
   let quantity = 1;
-  const quantityMatch = cleanLine.match(/(?:\bx|\*)\s*(\d+)\s*$|\((\d+)\)\s*$|\b(\d+)\s*(?:pcs?|potong)\s*$/i);
+  let content = unannotated;
+  const quantityMatch = content.match(/(?:\bx|\*)\s*(\d+)\s*$|\b(\d+)\s*(?:pcs?|potong)\s*$/i);
   const quantityValue = quantityMatch?.slice(1).find(Boolean);
-  let content = cleanLine;
   if (quantityMatch && quantityValue) {
-    quantity = Math.max(1, parseInt(quantityValue, 10));
-    content = cleanLine.slice(0, quantityMatch.index).trim();
+    quantity = Math.max(1, parseInt(quantityValue, 10) || 1);
+    content = content.slice(0, quantityMatch.index).trim();
   }
 
-  const explicitSize = /\bukuran\s+(XXXL|3XL|4XL|XXL|2XL|XL|XS|S|M|L)\b/i.exec(content);
-  let sizeMatch: RegExpExecArray | null = null;
-  let prefix = '';
-  if (explicitSize) {
-    sizeMatch = explicitSize;
-    prefix = content.slice(0, explicitSize.index);
+  const annotationsContainSize = annotations.find(annotation => {
+    const match = annotation.match(/^(?:ukuran\s+)?(CUSTOM|XXXL|3XL|4XL|XXL|2XL|XL|XS|S|M|L)$/i);
+    return Boolean(match);
+  });
+  const slashParts = content.includes('/') ? content.split('/').map(part => part.trim()) : [];
+  let name = '';
+  let number = '-';
+  let size = annotationsContainSize
+    ? canonicalizeSize(annotationsContainSize.replace(/^ukuran\s+/i, ''))
+    : '';
+  const noteParts: string[] = annotations.filter(annotation => !/^(?:ukuran\s+)?(CUSTOM|XXXL|3XL|4XL|XXL|2XL|XL|XS|S|M|L)$/i.test(annotation));
+  let uncertain = false;
+
+  const assignSizeAndNumber = (parts: string[]) => {
+    for (const part of parts) {
+      const sizeValue = part.replace(/^ukuran\s+/i, '').trim();
+      if (!size && PASTED_SIZE_PATTERN.test(sizeValue)) {
+        size = canonicalizeSize(sizeValue);
+        continue;
+      }
+      const numberMatch = part.match(/^(?:no\.?\s*(?:punggung)?\s*[:#-]?\s*)?#?(\d{1,3})$/i);
+      if (number === '-' && numberMatch) {
+        number = numberMatch[1];
+        continue;
+      }
+      if (part && part !== name) noteParts.push(part);
+    }
+  };
+
+  if (slashParts.length > 1) {
+    name = slashParts.shift() || '';
+    assignSizeAndNumber(slashParts);
   } else {
-    const candidates = [...content.matchAll(/\b(XXXL|3XL|4XL|XXL|2XL|XL|XS|S|M|L)\b/gi)];
-    for (const candidate of candidates) {
-      const candidatePrefix = content.slice(0, candidate.index);
-      if (parsePlayerPrefix(candidatePrefix)) {
-        sizeMatch = candidate;
-        prefix = candidatePrefix;
-        break;
+    const explicitSize = /\bukuran\s+(CUSTOM|XXXL|3XL|4XL|XXL|2XL|XL|XS|S|M|L)\b/i.exec(content);
+    const sizeCandidates = [...content.matchAll(/\b(CUSTOM|XXXL|3XL|4XL|XXL|2XL|XL|XS|S|M|L)\b/gi)];
+    const sizeMatch = explicitSize || sizeCandidates[sizeCandidates.length - 1];
+    if (sizeMatch) {
+      size = size || canonicalizeSize(sizeMatch[1]);
+      const before = content.slice(0, sizeMatch.index).trim();
+      const prefixMatch = before.match(/^(.*?)\s*(?:no\.?\s*(?:punggung)?\s*)?[-–—]?\s*#?(\d{1,3})\s*$/i);
+      if (prefixMatch?.[1]?.trim()) {
+        name = prefixMatch[1].replace(/[\s\-–—]+$/, '').trim();
+        number = prefixMatch[2];
+      } else {
+        name = before;
+      }
+      noteParts.push(content.slice((sizeMatch.index || 0) + sizeMatch[0].length));
+    } else {
+      const prefixMatch = content.match(/^(.*?)\s*(?:no\.?\s*(?:punggung)?\s*)?[-–—]?\s*#?(\d{1,3})\s*$/i);
+      if (prefixMatch?.[1]?.trim()) {
+        name = prefixMatch[1].replace(/[\s\-–—]+$/, '').trim();
+        number = prefixMatch[2];
+      } else {
+        name = content;
       }
     }
   }
 
-  if (!sizeMatch) return null;
-  const player = parsePlayerPrefix(prefix);
-  if (!player) return null;
+  const noName = /^(?:tanpa nama|nama kosong|-)$/i.test(name);
+  if (noName) name = '-';
+  if (/\btanpa nomor\b|\btanpa nomor punggung\b|\btanpa nama\s*(?:dan|&)\s*nomor\b/i.test(`${name} ${noteParts.join(' ')}`)) {
+    if (/tanpa nama\s*(?:dan|&)\s*nomor/i.test(`${name} ${noteParts.join(' ')}`)) name = '-';
+    number = '-';
+  }
 
-  let tail = content.slice(sizeMatch.index! + sizeMatch[0].length).trim();
   let sleeve: 'Pendek' | 'Panjang' | undefined;
-  tail = tail.replace(/\blengan\s+(panjang|pendek)\b|\b(panjang|pendek)\b/gi, (_match, withSleeve?: string, plainSleeve?: string) => {
-    const sleeveWord = (withSleeve || plainSleeve || '').toLowerCase();
-    sleeve = sleeveWord === 'panjang' ? 'Panjang' : 'Pendek';
-    return ' ';
-  });
-  const notes = tail
-    .replace(/\b(dan|dengan)\s*$/i, '')
-    .replace(/^[\s,;:.-]+|[\s,;:.-]+$/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
+  const normalizedNotes = noteParts.map(note => note.replace(/\blengan\s+(panjang|pendek)\b/gi, (_match, value: string) => {
+    sleeve = value.toLowerCase() === 'panjang' ? 'Panjang' : 'Pendek';
+    return '';
+  }).replace(/\b(panjang|pendek)\b/gi, (_match, value: string) => {
+    sleeve = value.toLowerCase() === 'panjang' ? 'Panjang' : 'Pendek';
+    return '';
+  }));
+  const notes = cleanRosterText(normalizedNotes.join('; '));
+
+  const unresolvedSizeToken = slashParts.some(part =>
+    /^[A-Za-z0-9-]{1,5}$/.test(part)
+    && !PASTED_SIZE_PATTERN.test(part)
+    && !/^(?:no\.?\s*(?:punggung)?\s*[:#-]?\s*)?#?\d{1,3}$/i.test(part),
+  );
+  if (!name) {
+    name = '-';
+    uncertain = true;
+  }
+  if (unresolvedSizeToken) uncertain = true;
 
   return {
-    ...player,
-    size: canonicalizeSize(sizeMatch[1]),
-    quantity,
-    sleeve,
-    notes,
-  };
-}
-
-function parseDelimitedPastedLine(line: string): ParsedPastedPlayer | null {
-  const delimiter = line.includes('\t') ? '\t' : ',';
-  const parts = line.split(delimiter).map(part => part.trim());
-  if (parts.length < 2) return null;
-
-  const ordinalColumn = /^(?:\d+[.)-]?|\[\d+\])$/.test(parts[0]);
-  const values = ordinalColumn ? parts.slice(1) : parts;
-  const name = values[0].replace(/^\s*(?:\d+\s*[.)-]\s*|\[\d+\]\s*)/, '').trim();
-  if (!name) return null;
-
-  const number = values.length === 2 ? '-' : (values[1] || '').replace(/^#/, '');
-  const size = values.length === 2 ? values[1] : values[2];
-  if (!PASTED_SIZE_PATTERN.test(size)) return null;
-
-  const note = values[4] || '';
-  const sleeveValue = values[5]?.toLowerCase();
-  const sleeve = sleeveValue?.includes('panjang') ? 'Panjang'
-    : sleeveValue?.includes('pendek') ? 'Pendek'
-    : undefined;
-
-  return {
-    name,
-    number: number.replace(/^#/, ''),
-    size: canonicalizeSize(size),
-    quantity: Math.max(1, parseInt(values[3] || '1', 10) || 1),
-    sleeve,
-    notes: note,
+    player: {
+      name,
+      number,
+      size: size || '-',
+      quantity,
+      sleeve,
+      notes,
+    },
+    uncertain,
   };
 }
 
@@ -372,25 +415,25 @@ export function parsePastedRosterDetailed(rawText: string): PastedRosterParseRes
     .split(/\r?\n/)
     .map((line, index) => ({ line: line.trim(), lineNumber: index + 1 }))
     .filter(entry => entry.line);
-  const players: ParsedPastedPlayer[] = [];
-  const issues: PastedRosterIssue[] = [];
-
-  lines.forEach(({ line, lineNumber }) => {
-    const parsed = line.includes('\t') || line.includes(',')
-      ? parseDelimitedPastedLine(line) || parsePastedTextLine(line)
-      : parsePastedTextLine(line);
-    if (parsed) {
-      players.push(parsed);
-    } else {
-      issues.push({
-        lineNumber,
-        line,
-        reason: 'Format nama, nomor punggung, dan ukuran tidak dapat dipastikan. Pastikan nomor dan ukuran ditulis jelas.',
-      });
-    }
+  const rows = lines.map(({ line, lineNumber }) => {
+    const parsed = parsePastedTextLine(line);
+    return {
+      lineNumber,
+      line,
+      player: parsed.player,
+      status: parsed.uncertain ? 'review' as const : 'valid' as const,
+      reason: parsed.uncertain ? 'Periksa kembali nama atau token ukuran yang belum dikenali.' : undefined,
+    };
   });
-
-  return { players, issues };
+  const players = rows.filter(row => row.status === 'valid').map(row => row.player);
+  const issues = rows
+    .filter(row => row.status === 'review')
+    .map(row => ({
+      lineNumber: row.lineNumber,
+      line: row.line,
+      reason: row.reason || 'Periksa kembali data roster ini.',
+    }));
+  return { players, issues, rows };
 }
 
 export function parsePastedRoster(rawText: string): ParsedPastedPlayer[] {

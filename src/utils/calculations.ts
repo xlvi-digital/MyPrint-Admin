@@ -3,7 +3,7 @@ import { Order, SizeRecapItem, STANDARD_SIZES } from '../types/order';
 /**
  * Calculates aggregate size recap across a list of orders (or a single order)
  */
-export function calculateSizeRecap(orders: Order[]): {
+export function calculateSizeRecap(orders: Order[], configuredSizes: string[] = STANDARD_SIZES): {
   recap: SizeRecapItem[];
   totalQty: number;
 } {
@@ -37,8 +37,8 @@ export function calculateSizeRecap(orders: Order[]): {
     .filter(([_, qty]) => qty > 0)
     .map(([size, quantity]) => ({ size, quantity }))
     .sort((a, b) => {
-      const idxA = STANDARD_SIZES.indexOf(a.size);
-      const idxB = STANDARD_SIZES.indexOf(b.size);
+      const idxA = configuredSizes.indexOf(a.size);
+      const idxB = configuredSizes.indexOf(b.size);
       if (idxA !== -1 && idxB !== -1) return idxA - idxB;
       return a.size.localeCompare(b.size);
     });

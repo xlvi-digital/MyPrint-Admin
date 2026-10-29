@@ -48,6 +48,8 @@ export const Settings: React.FC<SettingsProps> = ({
 }) => {
   const [isResetModalOpen, setIsResetModalOpen] = useState(false);
   const [isClearAllModalOpen, setIsClearAllModalOpen] = useState(false);
+  const [isClearLegacyModalOpen, setIsClearLegacyModalOpen] = useState(false);
+  const [legacyOrdersExported, setLegacyOrdersExported] = useState(false);
 
   // Supabase Configuration State
   const initialConfig = getSupabaseConfig();
@@ -61,6 +63,7 @@ export const Settings: React.FC<SettingsProps> = ({
   // Activity Logs State
   const [activityLogs, setActivityLogs] = useState<ActivityLog[]>([]);
   const [isLoadingLogs, setIsLoadingLogs] = useState(false);
+  const [isRestoring, setIsRestoring] = useState(false);
 
   useEffect(() => {
     loadLogs();
@@ -122,6 +125,7 @@ export const Settings: React.FC<SettingsProps> = ({
   const handleCopySchemaSql = () => {
     const schemaSql = `-- MYPRINTIN ADMIN SUPABASE SCHEMA (Paste di Supabase SQL Editor)
 -- Lihat file /supabase/schema.sql untuk script lengkap
+-- Setelah schema dasar tersedia, jalankan supabase/migration_order_channels_and_master_data.sql secara terpisah.
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 CREATE TABLE IF NOT EXISTS orders (
@@ -251,6 +255,11 @@ ALTER PUBLICATION supabase_realtime ADD TABLE orders, order_items, order_activit
   };
 
   const handleResetDemo = () => {
+    if (isSupabaseConfigured()) {
+      onShowToast('warning', 'Data demo lokal tidak dapat mengganti data pesanan Supabase.');
+      setIsResetModalOpen(false);
+      return;
+    }
     storageService.resetToDemoData();
     onReloadOrders();
     setIsResetModalOpen(false);
@@ -258,6 +267,11 @@ ALTER PUBLICATION supabase_realtime ADD TABLE orders, order_items, order_activit
   };
 
   const handleClearAll = () => {
+    if (isSupabaseConfigured()) {
+      onShowToast('warning', 'Pengosongan lokal dinonaktifkan saat menggunakan Supabase; data database tidak dihapus.');
+      setIsClearAllModalOpen(false);
+      return;
+    }
     storageService.clearAllOrders();
     onReloadOrders();
     setIsClearAllModalOpen(false);
@@ -275,27 +289,86 @@ ALTER PUBLICATION supabase_realtime ADD TABLE orders, order_items, order_activit
     onShowToast('success', 'File backup JSON berhasil didownload.');
   };
 
-  const handleRestoreJson = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleRestoreJson = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    const reader = new FileReader();
-    reader.onload = event => {
-      try {
-        const importedOrders = JSON.parse(event.target?.result as string);
-        if (Array.isArray(importedOrders)) {
-          storageService.saveOrders(importedOrders);
-          onReloadOrders();
-          onShowToast('success', `Berhasil memulihkan ${importedOrders.length} order dari file backup.`);
-        } else {
-          onShowToast('error', 'Format file JSON tidak valid.');
-        }
-      } catch {
-        onShowToast('error', 'Gagal membaca file JSON backup.');
+    setIsRestoring(true);
+    try {
+      const importedOrders: unknown = JSON.parse(await file.text());
+      if (!Array.isArray(importedOrders)) {
+        onShowToast('error', 'Format file JSON tidak valid.');
+        return;
       }
-    };
-    reader.readAsText(file);
-    e.target.value = '';
+      let restoredCount = 0;
+      const failures: string[] = [];
+      for (const importedOrder of importedOrders as Order[]) {
+        if (!importedOrder?.customer || !importedOrder?.product) {
+          failures.push('Ada data order dengan format tidak lengkap.');
+          continue;
+        }
+        const result = await supabaseOrderService.saveOrder(importedOrder);
+        if (result.success) {
+          restoredCount += 1;
+          if (result.designsError || result.assetsError) {
+            failures.push(`#${importedOrder.orderNumber || result.order.orderNumber}: ${result.designsError || result.assetsError}`);
+          }
+        } else {
+          failures.push(`#${importedOrder.orderNumber || 'baru'}: ${result.error || 'gagal disimpan'}`);
+        }
+      }
+      await onReloadOrders();
+      if (failures.length > 0) {
+        onShowToast(
+          restoredCount > 0 ? 'warning' : 'error',
+          `${restoredCount} dari ${importedOrders.length} order tersimpan. ${failures.slice(0, 3).join(' | ')}`,
+          'Pemulihan Sebagian',
+        );
+      } else {
+        onShowToast('success', `Berhasil memulihkan ${restoredCount} order ke Supabase.`);
+      }
+    } catch (error) {
+      onShowToast(
+        'error',
+        error instanceof Error ? `Gagal memulihkan backup: ${error.message}` : 'Gagal membaca file JSON backup.',
+      );
+    } finally {
+      setIsRestoring(false);
+      e.target.value = '';
+    }
+  };
+
+  const handleExportLegacyOrders = () => {
+    const legacyOrders = storageService.getLegacyOrders();
+    if (!legacyOrders?.length) {
+      onShowToast('info', 'Tidak ditemukan data pada cache browser lama.');
+      return;
+    }
+    const blob = new Blob([JSON.stringify(legacyOrders, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const downloadAnchor = document.createElement('a');
+    downloadAnchor.href = url;
+    downloadAnchor.download = `myprintin_legacy_browser_orders_${new Date().toISOString().split('T')[0]}.json`;
+    document.body.appendChild(downloadAnchor);
+    downloadAnchor.click();
+    downloadAnchor.remove();
+    URL.revokeObjectURL(url);
+    setLegacyOrdersExported(true);
+    onShowToast('success', `${legacyOrders.length} order lokal lama diekspor. Periksa file sebelum memulihkannya ke Supabase.`);
+  };
+
+  const handleClearLegacyOrders = () => {
+    if (!legacyOrdersExported) {
+      onShowToast('warning', 'Ekspor cache lokal lama terlebih dahulu sebelum menghapusnya.');
+      return;
+    }
+    if (storageService.clearLegacyOrders()) {
+      setLegacyOrdersExported(false);
+      setIsClearLegacyModalOpen(false);
+      onShowToast('success', 'Cache order lama di browser telah dibersihkan. Data Supabase tidak berubah.');
+    } else {
+      onShowToast('error', 'Cache lama gagal dihapus. Data tidak diubah; coba lagi setelah ekspor.');
+    }
   };
 
   return (
@@ -329,6 +402,9 @@ ALTER PUBLICATION supabase_realtime ADD TABLE orders, order_items, order_activit
             </div>
             <p className="text-xs text-neutral-400 mt-0.5">
               Hubungkan project Supabase agar semua operator, admin, dan owner menggunakan database yang sama secara real-time.
+            </p>
+            <p className="mt-1 text-[11px] text-amber-700">
+              Untuk Metode Pesanan dan Data Master, jalankan file <code>supabase/migration_order_channels_and_master_data.sql</code> setelah schema dasar.
             </p>
           </div>
 
@@ -531,10 +607,10 @@ ALTER PUBLICATION supabase_realtime ADD TABLE orders, order_items, order_activit
       <div className="bg-white rounded-3xl border border-neutral-200/80 p-6 shadow-2xs">
         <h3 className="text-xs font-bold text-neutral-400 uppercase tracking-wider mb-4 flex items-center gap-2">
           <Database className="w-4 h-4 text-emerald-600" />
-          <span>Cadangan & Pemulihan Data Offline (JSON Backup)</span>
+          <span>Cadangan & Pemulihan Data (JSON Backup)</span>
         </h3>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
           {/* Backup Button */}
           <div className="p-4 rounded-2xl border border-neutral-200 bg-neutral-50/50 flex flex-col justify-between">
             <div>
@@ -557,14 +633,41 @@ ALTER PUBLICATION supabase_realtime ADD TABLE orders, order_items, order_activit
             <div>
               <h4 className="font-bold text-xs text-neutral-900 mb-1">Restore Database</h4>
               <p className="text-[11px] text-neutral-500 mb-3">
-                Pulihkan file JSON cadangan order ke dalam sistem.
+                Pulihkan file JSON cadangan order langsung ke Supabase.
               </p>
             </div>
-            <label className="flex items-center justify-center gap-2 px-4 py-2 bg-white border border-neutral-300 hover:bg-neutral-100 text-neutral-800 rounded-xl text-xs font-semibold cursor-pointer transition-colors shadow-2xs">
+            <label className={`flex items-center justify-center gap-2 px-4 py-2 bg-white border border-neutral-300 hover:bg-neutral-100 text-neutral-800 rounded-xl text-xs font-semibold transition-colors shadow-2xs ${isRestoring ? 'cursor-wait opacity-60' : 'cursor-pointer'}`}>
               <Upload className="w-3.5 h-3.5" />
-              <span>Pilih File Backup JSON</span>
-              <input type="file" accept=".json,application/json" onChange={handleRestoreJson} className="hidden" />
+              <span>{isRestoring ? 'Memulihkan...' : 'Pilih File Backup JSON'}</span>
+              <input type="file" accept=".json,application/json" onChange={handleRestoreJson} disabled={isRestoring} className="hidden" />
             </label>
+          </div>
+
+          <div className="p-4 rounded-2xl border border-amber-200 bg-amber-50/50 flex flex-col justify-between">
+            <div>
+              <h4 className="font-bold text-xs text-neutral-900 mb-1">Cache Browser Versi Lama</h4>
+              <p className="text-[11px] text-neutral-500 mb-3">
+                Ekspor cache lama untuk memeriksa order yang mungkin belum tersinkron. Cache tidak akan dihapus otomatis.
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={handleExportLegacyOrders}
+                className="flex flex-1 items-center justify-center gap-2 px-3 py-2 bg-white border border-amber-300 hover:bg-amber-100 text-neutral-800 rounded-xl text-xs font-semibold transition-colors"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Ekspor Data</span>
+              </button>
+              <button
+                onClick={() => setIsClearLegacyModalOpen(true)}
+                disabled={!legacyOrdersExported}
+                title={!legacyOrdersExported ? 'Ekspor cache lama terlebih dahulu' : undefined}
+                className="flex flex-1 items-center justify-center gap-2 px-3 py-2 bg-white border border-red-200 hover:bg-red-50 text-red-700 rounded-xl text-xs font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Bersihkan Cache</span>
+              </button>
+            </div>
           </div>
         </div>
 
@@ -573,14 +676,16 @@ ALTER PUBLICATION supabase_realtime ADD TABLE orders, order_items, order_activit
           <div>
             <h4 className="font-bold text-xs text-neutral-900">Kelola Contoh Data Bawaan (Demo Pasdama)</h4>
             <p className="text-[11px] text-neutral-400">
-              Reset ke pesanan template asli Order #366 Pasdama Milano 76 pcs atau kosongkan sistem.
+              Hanya tersedia dalam mode lokal. Pengaturan ini tidak mengubah data Supabase.
             </p>
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
             <button
               onClick={() => setIsResetModalOpen(true)}
-              className="flex items-center gap-1.5 px-3 py-2 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 rounded-xl text-xs font-semibold transition-colors"
+              disabled={isSupabaseConfigured()}
+              title={isSupabaseConfigured() ? 'Tidak tersedia saat Supabase aktif' : undefined}
+              className="flex items-center gap-1.5 px-3 py-2 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 rounded-xl text-xs font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-40"
             >
               <RotateCcw className="w-3.5 h-3.5" />
               <span>Reset Data Demo</span>
@@ -588,7 +693,9 @@ ALTER PUBLICATION supabase_realtime ADD TABLE orders, order_items, order_activit
 
             <button
               onClick={() => setIsClearAllModalOpen(true)}
-              className="flex items-center gap-1.5 px-3 py-2 bg-red-50 hover:bg-red-100 text-red-700 rounded-xl text-xs font-semibold transition-colors"
+              disabled={isSupabaseConfigured()}
+              title={isSupabaseConfigured() ? 'Tidak tersedia saat Supabase aktif' : undefined}
+              className="flex items-center gap-1.5 px-3 py-2 bg-red-50 hover:bg-red-100 text-red-700 rounded-xl text-xs font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-40"
             >
               <Trash2 className="w-3.5 h-3.5" />
               <span>Kosongkan Semua</span>
@@ -618,6 +725,17 @@ ALTER PUBLICATION supabase_realtime ADD TABLE orders, order_items, order_activit
         cancelText="Batal"
         onConfirm={handleClearAll}
         onCancel={() => setIsClearAllModalOpen(false)}
+      />
+
+      <ConfirmModal
+        isOpen={isClearLegacyModalOpen}
+        title="Bersihkan Cache Order Browser Lama?"
+        subtitle="Pastikan file ekspor telah tersimpan dan data yang belum tersinkron sudah dipulihkan. Tindakan ini hanya menghapus salinan browser, bukan data Supabase."
+        type="warning"
+        confirmText="Bersihkan Cache Lama"
+        cancelText="Batal"
+        onConfirm={handleClearLegacyOrders}
+        onCancel={() => setIsClearLegacyModalOpen(false)}
       />
     </div>
   );

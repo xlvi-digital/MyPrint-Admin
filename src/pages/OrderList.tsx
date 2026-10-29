@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { Order, ProductionStatus, PRODUCTION_STATUS_STEPS, COMMON_MATERIALS } from '../types/order';
+import { Order, ProductionStatus, PRODUCTION_STATUS_STEPS } from '../types/order';
 import { 
   Search, 
   Filter, 
@@ -14,11 +14,14 @@ import {
   Calendar, 
   Plus,
   Shirt,
-  X
+  X,
+  RefreshCw,
+  LoaderCircle,
 } from 'lucide-react';
 import { StatusBadge } from '../components/common/StatusBadge';
 import { formatRupiah, formatDateId } from '../utils/formatters';
 import { EmptyState } from '../components/common/EmptyState';
+import { useMasterData } from '../hooks/useMasterData';
 
 interface OrderListProps {
   orders: Order[];
@@ -29,6 +32,10 @@ interface OrderListProps {
   onDeleteOrder: (id: string) => void;
   onCreateNew: () => void;
   initialFilterStatus?: ProductionStatus | 'ALL';
+  isLoading?: boolean;
+  isRefreshing?: boolean;
+  loadError?: string | null;
+  onRefresh?: () => void;
 }
 
 export const OrderList: React.FC<OrderListProps> = ({
@@ -40,11 +47,20 @@ export const OrderList: React.FC<OrderListProps> = ({
   onDeleteOrder,
   onCreateNew,
   initialFilterStatus = 'ALL',
+  isLoading = false,
+  isRefreshing = false,
+  loadError,
+  onRefresh,
 }) => {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>(initialFilterStatus);
   const [materialFilter, setMaterialFilter] = useState<string>('ALL');
   const [sortBy, setSortBy] = useState<'newest' | 'oldest' | 'deadline' | 'qty'>('newest');
+  const masterData = useMasterData();
+  const availableMaterials = Array.from(new Set([
+    ...masterData.data.materials.map(item => item.name),
+    ...orders.map(order => order.product.material),
+  ].filter(Boolean)));
 
   // Filtered & Sorted orders
   const filteredOrders = useMemo(() => {
@@ -54,11 +70,13 @@ export const OrderList: React.FC<OrderListProps> = ({
         if (search.trim()) {
           const q = search.toLowerCase();
           const matchNum = order.orderNumber.toLowerCase().includes(q);
+          const matchExternalNum = (order.externalOrderNumber || '').toLowerCase().includes(q);
+          const matchChannel = (order.salesChannel || 'Offline').toLowerCase().includes(q);
           const matchName = order.customer.name.toLowerCase().includes(q);
           const matchPhone = (order.customer.phone || '').toLowerCase().includes(q);
           const matchTeam = (order.customer.teamName || '').toLowerCase().includes(q);
           const matchProd = (order.product.productType || '').toLowerCase().includes(q);
-          if (!matchNum && !matchName && !matchPhone && !matchTeam && !matchProd) {
+          if (!matchNum && !matchExternalNum && !matchChannel && !matchName && !matchPhone && !matchTeam && !matchProd) {
             return false;
           }
         }
@@ -95,9 +113,11 @@ export const OrderList: React.FC<OrderListProps> = ({
   }, [orders, search, statusFilter, materialFilter, sortBy]);
 
   const handleExportAllCsv = () => {
-    const headers = ['No Order', 'Pemesan', 'Tim', 'Telepon', 'Bahan', 'Produk', 'Total Qty', 'Status', 'Tanggal Order', 'Deadline'];
+    const headers = ['No Order Internal', 'Metode Pesanan', 'Nomor Pesanan Eksternal', 'Pemesan', 'Tim', 'Telepon', 'Bahan', 'Produk', 'Total Qty', 'Status', 'Tanggal Order', 'Deadline'];
     const rows = filteredOrders.map(o => [
       `"${o.orderNumber}"`,
+      `"${o.salesChannel || 'Offline'}"`,
+      `"${(o.externalOrderNumber || '').replace(/"/g, '""')}"`,
       `"${(o.customer.name || '').replace(/"/g, '""')}"`,
       `"${(o.customer.teamName || '').replace(/"/g, '""')}"`,
       `"${(o.customer.phone || '').replace(/"/g, '""')}"`,
@@ -201,13 +221,20 @@ export const OrderList: React.FC<OrderListProps> = ({
 
           {/* Material & Sorting Dropdowns */}
           <div className="flex items-center gap-2 ml-auto">
+            {onRefresh && (
+              <button type="button" onClick={onRefresh} disabled={isRefreshing || isLoading}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-neutral-100 px-2.5 py-1.5 text-xs font-semibold text-neutral-700 hover:bg-neutral-200 disabled:opacity-50">
+                {isRefreshing ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                <span>Refresh</span>
+              </button>
+            )}
             <select
               value={materialFilter}
               onChange={e => setMaterialFilter(e.target.value)}
               className="px-2.5 py-1.5 bg-neutral-100 hover:bg-neutral-200 rounded-lg text-xs font-semibold text-neutral-700 outline-none cursor-pointer"
             >
               <option value="ALL">Semua Bahan</option>
-              {COMMON_MATERIALS.filter(m => m !== 'Custom').map(m => (
+              {availableMaterials.filter(m => m !== 'Custom').map(m => (
                 <option key={m} value={m}>
                   Bahan: {m}
                 </option>
@@ -230,7 +257,29 @@ export const OrderList: React.FC<OrderListProps> = ({
 
       {/* Main Order Table */}
       <div className="bg-white rounded-3xl border border-neutral-200/80 shadow-2xs overflow-hidden">
-        {filteredOrders.length === 0 ? (
+        {loadError && (
+          <div role="alert" className="m-4 flex flex-col gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-xs text-red-800 sm:flex-row sm:items-center sm:justify-between">
+            <span>Gagal memuat data dari Supabase: {loadError}</span>
+            {onRefresh && <button type="button" onClick={onRefresh} disabled={isRefreshing} className="inline-flex shrink-0 items-center gap-1.5 self-start rounded-lg bg-white px-3 py-2 font-bold text-red-700 hover:bg-red-100 disabled:opacity-50 sm:self-auto">
+              {isRefreshing ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />} Coba lagi
+            </button>}
+          </div>
+        )}
+        {isLoading ? (
+          <div className="space-y-3 p-4 sm:p-5" aria-label="Memuat daftar order">
+            {Array.from({ length: 6 }, (_, index) => (
+              <div key={index} className="grid animate-pulse grid-cols-2 gap-3 rounded-xl border border-neutral-100 p-3 sm:grid-cols-5">
+                <div className="h-4 rounded bg-neutral-200" />
+                <div className="h-4 rounded bg-neutral-100" />
+                <div className="hidden h-4 rounded bg-neutral-100 sm:block" />
+                <div className="h-4 rounded bg-neutral-100" />
+                <div className="hidden h-4 rounded bg-neutral-100 sm:block" />
+              </div>
+            ))}
+          </div>
+        ) : filteredOrders.length === 0 && loadError ? (
+          <div className="p-8 text-center text-sm text-neutral-600">Daftar order belum dapat dimuat. Periksa koneksi, lalu coba lagi.</div>
+        ) : filteredOrders.length === 0 ? (
           <EmptyState
             title="Tidak ada order ditemukan"
             description={
@@ -267,6 +316,9 @@ export const OrderList: React.FC<OrderListProps> = ({
                     {/* Order Number */}
                     <td className="py-3.5 px-4 font-mono font-bold text-neutral-900">
                       <span className="text-[#D71920]">#{order.orderNumber}</span>
+                      <div className="mt-1 max-w-[150px] truncate text-[10px] font-sans font-medium text-neutral-500" title={`${order.salesChannel || 'Offline'} · ${order.externalOrderNumber || 'Nomor lama belum dicatat'}`}>
+                        {order.salesChannel || 'Offline'} · {order.externalOrderNumber || '—'}
+                      </div>
                     </td>
 
                     {/* Customer */}

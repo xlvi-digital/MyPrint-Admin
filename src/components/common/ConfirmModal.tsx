@@ -1,5 +1,5 @@
 import React from 'react';
-import { X, AlertTriangle, CheckCircle, Info } from 'lucide-react';
+import { X, AlertTriangle, CheckCircle, Info, LoaderCircle } from 'lucide-react';
 
 interface ConfirmModalProps {
   isOpen: boolean;
@@ -11,6 +11,8 @@ interface ConfirmModalProps {
   onConfirm: () => void;
   onCancel: () => void;
   children?: React.ReactNode;
+  isProcessing?: boolean;
+  processingText?: string;
 }
 
 export const ConfirmModal: React.FC<ConfirmModalProps> = ({
@@ -23,6 +25,8 @@ export const ConfirmModal: React.FC<ConfirmModalProps> = ({
   onConfirm,
   onCancel,
   children,
+  isProcessing = false,
+  processingText = 'Memproses...',
 }) => {
   if (!isOpen) return null;
 
@@ -67,7 +71,9 @@ export const ConfirmModal: React.FC<ConfirmModalProps> = ({
             </div>
           </div>
           <button
+            type="button"
             onClick={onCancel}
+            disabled={isProcessing}
             className="text-neutral-400 hover:text-neutral-700 p-1 rounded-lg transition-colors"
             aria-label="Tutup"
           >
@@ -83,16 +89,19 @@ export const ConfirmModal: React.FC<ConfirmModalProps> = ({
           <button
             type="button"
             onClick={onCancel}
-            className="px-4 py-2.5 text-xs font-semibold text-neutral-700 bg-white border border-neutral-300 rounded-xl hover:bg-neutral-50 transition-colors shadow-xs"
+            disabled={isProcessing}
+            className="px-4 py-2.5 text-xs font-semibold text-neutral-700 bg-white border border-neutral-300 rounded-xl hover:bg-neutral-50 transition-colors shadow-xs disabled:cursor-not-allowed disabled:opacity-50"
           >
             {cancelText}
           </button>
           <button
             type="button"
             onClick={onConfirm}
-            className={`px-5 py-2.5 text-xs font-semibold rounded-xl transition-all shadow-xs ${typeConfig.btnClass}`}
+            disabled={isProcessing}
+            className={`inline-flex items-center gap-1.5 px-5 py-2.5 text-xs font-semibold rounded-xl transition-all shadow-xs disabled:cursor-not-allowed disabled:opacity-60 ${typeConfig.btnClass}`}
           >
-            {confirmText}
+            {isProcessing && <LoaderCircle className="h-3.5 w-3.5 animate-spin" />}
+            {isProcessing ? processingText : confirmText}
           </button>
         </div>
       </div>

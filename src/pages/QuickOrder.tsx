@@ -1,8 +1,7 @@
 import React, { useState, useEffect } from "react";
 import {
   Order,
-  COMMON_MATERIALS,
-  STANDARD_SIZES,
+  SalesChannel,
   PlayerDetail,
   DesignAsset,
   WhatsAppParseResult,
@@ -22,17 +21,22 @@ import {
   Plus,
   Trash2,
   ClipboardPaste,
-  Image as ImageIcon,
   Shirt,
   FileText,
   ArrowRight,
   Check,
   Sparkles,
   Sliders,
+  LoaderCircle,
 } from "lucide-react";
 import { WhatsAppParserModal } from "../components/order/WhatsAppParserModal";
 import { PlayerFastPasteModal } from "../components/order/PlayerFastPasteModal";
+import { DesignUploader } from "../components/invoice/DesignUploader";
+import { groupRosterPlayers, getRosterSizeTotals } from "../utils/rosterGrouping";
+import { RosterSizeSummary } from "../components/invoice/RosterSizeSummary";
 import { InvoicePreviewA4 } from "../components/invoice/InvoicePreviewA4";
+import { SalesOrderFields } from "../components/order/SalesOrderFields";
+import { useMasterData } from "../hooks/useMasterData";
 
 interface QuickOrderProps {
   onOrderCreated: (order: Order) => Promise<Order | void> | Order | void;
@@ -51,6 +55,9 @@ export const QuickOrder: React.FC<QuickOrderProps> = ({
   const [material, setMaterial] = useState("Milano");
   const [quantity, setQuantity] = useState<number>(20);
   const [unitPrice, setUnitPrice] = useState<number>(110000);
+  const [salesChannel, setSalesChannel] = useState<SalesChannel>("Offline");
+  const [externalOrderNumber, setExternalOrderNumber] = useState("");
+  const masterData = useMasterData();
 
   // Progressive Disclosure Toggles (Section 7 & 17)
   const [enablePlayers, setEnablePlayers] = useState(false);
@@ -85,6 +92,8 @@ export const QuickOrder: React.FC<QuickOrderProps> = ({
 
   // Recalculate price
   const totalPrice = (quantity || 0) * (unitPrice || 0);
+  const groupedPlayers = groupRosterPlayers(players);
+  const sizeTotals = getRosterSizeTotals(players);
 
   // Handle WhatsApp parsed data application
   const handleApplyWhatsApp = (res: WhatsAppParseResult) => {
@@ -150,41 +159,30 @@ export const QuickOrder: React.FC<QuickOrderProps> = ({
     imported: PlayerDetail[],
     mode: "replace" | "append",
   ) => {
-    setPlayers((prev) =>
-      mode === "replace" ? imported : [...prev, ...imported],
-    );
+    const updatedPlayers = mode === "replace" ? imported : [...players, ...imported];
+    setPlayers(updatedPlayers);
+    setQuantity(updatedPlayers.reduce((sum, player) => sum + (Number(player.quantity) || 0), 0));
     setEnablePlayers(true);
-  };
-
-  const handleDesignUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
-
-    Array.from(files).forEach((file) => {
-      const reader = new FileReader();
-      reader.onload = (ev) => {
-        setDesigns((prev) => [
-          ...prev,
-          {
-            id: `d-${Date.now()}-${Math.random().toString(36).substring(2, 5)}`,
-            label: file.name.replace(/\.[^/.]+$/, ""),
-            dataUrl: ev.target?.result as string,
-            fileName: file.name,
-          },
-        ]);
-      };
-      reader.readAsDataURL(file);
-    });
-    e.target.value = "";
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmitting) return;
     const err: Record<string, string> = {};
 
     if (!customerName.trim()) err.customerName = "Nama pemesan wajib diisi";
     if (!phone.trim()) err.phone = "No WhatsApp wajib diisi";
     if (!quantity || quantity <= 0) err.quantity = "Total jumlah minimal 1";
+    if (!externalOrderNumber.trim()) err.externalOrderNumber = "Nomor pesanan wajib diisi";
+    if (masterData.isLoading) err.masterData = "Data master masih dimuat. Coba simpan kembali sebentar lagi.";
+    else if (masterData.error) err.masterData = masterData.error;
+    else {
+      if (!masterData.data.product_types.some(item => item.isActive && item.name === productType)) err.productType = "Pilih jenis produk aktif dari Data Master.";
+      if (!masterData.data.materials.some(item => item.isActive && item.name === material)) err.material = "Pilih jenis bahan aktif dari Data Master.";
+      if (enablePlayers && players.some(player => !masterData.data.jersey_sizes.some(
+        size => size.isActive && (size.code === player.size || size.name === player.size),
+      ))) err.playerSizes = "Roster berisi ukuran nonaktif atau belum terdaftar.";
+    }
 
     if (Object.keys(err).length > 0) {
       setErrors(err);
@@ -197,6 +195,8 @@ export const QuickOrder: React.FC<QuickOrderProps> = ({
     const newOrder: Order = {
       id: newId,
       orderNumber,
+      salesChannel,
+      externalOrderNumber: externalOrderNumber.trim(),
       customer: {
         name: customerName.trim().toUpperCase(),
         phone: phone.trim(),
@@ -284,6 +284,8 @@ export const QuickOrder: React.FC<QuickOrderProps> = ({
   const previewOrder: Order = {
     id: draftOrderId,
     orderNumber: previewOrderNumber,
+    salesChannel,
+    externalOrderNumber,
     customer: {
       name: customerName.trim().toUpperCase(),
       phone: phone.trim(),
@@ -445,6 +447,20 @@ export const QuickOrder: React.FC<QuickOrderProps> = ({
                 />
               </div>
 
+              <SalesOrderFields
+                salesChannel={salesChannel}
+                externalOrderNumber={externalOrderNumber}
+                onChange={(channel, number) => {
+                  setSalesChannel(channel);
+                  setExternalOrderNumber(number);
+                }}
+              />
+              {errors.externalOrderNumber && (
+                <p className="text-[11px] font-semibold text-red-600">{errors.externalOrderNumber}</p>
+              )}
+              {errors.masterData && <p className="text-[11px] font-semibold text-red-600">{errors.masterData}</p>}
+              {errors.playerSizes && <p className="text-[11px] font-semibold text-red-600">{errors.playerSizes}</p>}
+
               {/* Jenis Produk */}
               <div>
                 <label className="block text-xs font-bold text-neutral-700 mb-1">
@@ -455,18 +471,11 @@ export const QuickOrder: React.FC<QuickOrderProps> = ({
                   onChange={(e) => setProductType(e.target.value)}
                   className="w-full px-3.5 py-2.5 text-xs rounded-2xl border border-neutral-200 bg-neutral-50/50 focus:bg-white outline-none font-bold cursor-pointer"
                 >
-                  <option value="Jersey Sublime">Jersey Sublime</option>
-                  <option value="Jersey Sublime Setelan">
-                    Jersey Sublime Setelan (Baju + Celana)
-                  </option>
-                  <option value="Jersey Running / Singlet">
-                    Jersey Running / Singlet
-                  </option>
-                  <option value="Jaket / Hoodie Sublime">
-                    Jaket / Hoodie Sublime
-                  </option>
-                  <option value="Kaos Event Sublime">Kaos Event Sublime</option>
+                  {masterData.options("product_types", productType, false).map(item => (
+                    <option key={item.id} value={item.name}>{item.name}</option>
+                  ))}
                 </select>
+                {errors.productType && <p className="mt-1 text-[10px] text-red-600">{errors.productType}</p>}
               </div>
 
               {/* Jenis Bahan */}
@@ -479,12 +488,12 @@ export const QuickOrder: React.FC<QuickOrderProps> = ({
                   onChange={(e) => setMaterial(e.target.value)}
                   className="w-full px-3.5 py-2.5 text-xs rounded-2xl border border-neutral-200 bg-neutral-50/50 focus:bg-white outline-none font-black text-[#D71920] cursor-pointer"
                 >
-                  {COMMON_MATERIALS.filter((m) => m !== "Custom").map((m) => (
-                    <option key={m} value={m}>
-                      {m}
-                    </option>
-                  ))}
+                  {masterData.options("materials", material, false)
+                    .filter(item => item.name !== "Custom")
+                    .map(item => <option key={item.id} value={item.name}>{item.name}</option>)}
                 </select>
+                {errors.material && <p className="mt-1 text-[10px] text-red-600">{errors.material}</p>}
+                {masterData.error && <p className="mt-1 text-[10px] text-amber-700">{masterData.error}</p>}
               </div>
 
               {/* Total Jumlah Pcs & Harga */}
@@ -663,7 +672,15 @@ export const QuickOrder: React.FC<QuickOrderProps> = ({
                           </td>
                         </tr>
                       ) : (
-                        players.map((p, idx) => (
+                        groupedPlayers.map(({ player: p, group }, idx) => (
+                          <React.Fragment key={p.id}>
+                          {(idx === 0 || groupedPlayers[idx - 1].group !== group) && (
+                            <tr className="bg-neutral-50">
+                              <td colSpan={8} className="border-y border-neutral-200 px-3 py-1.5 text-[11px] font-bold text-neutral-700">
+                                Kelompok {group} — {sizeTotals[group] || 0} pcs
+                              </td>
+                            </tr>
+                          )}
                           <tr key={p.id} className="hover:bg-neutral-50/70">
                             <td className="py-1.5 px-3 text-center text-neutral-400 font-mono text-[11px]">
                               {idx + 1}
@@ -710,10 +727,8 @@ export const QuickOrder: React.FC<QuickOrderProps> = ({
                                 }
                                 className="w-full text-center px-2 py-1 rounded-lg border border-transparent hover:border-neutral-200 focus:border-[#D71920] outline-none font-bold text-[#D71920]"
                               >
-                                {STANDARD_SIZES.map((s) => (
-                                  <option key={s} value={s}>
-                                    {s}
-                                  </option>
+                                {masterData.options("jersey_sizes", p.size, false).map(size => (
+                                  <option key={size.id} value={size.code || size.name}>{size.name}</option>
                                 ))}
                               </select>
                             </td>
@@ -787,53 +802,26 @@ export const QuickOrder: React.FC<QuickOrderProps> = ({
                               </button>
                             </td>
                           </tr>
+                          </React.Fragment>
                         ))
                       )}
                     </tbody>
                   </table>
                 </div>
+                <RosterSizeSummary players={players} />
               </div>
             )}
 
             {/* DISCLOSED SECTION: DESIGN UPLOAD */}
             {enableDesigns && (
-              <div className="pt-4 border-t border-neutral-100 space-y-3 animate-in fade-in duration-200">
-                <span className="text-xs font-bold text-neutral-900 block">
-                  Unggah File Desain Jersey
-                </span>
-                <div className="flex flex-wrap items-center gap-3">
-                  <label className="flex items-center gap-2 px-4 py-2.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-800 rounded-2xl text-xs font-semibold cursor-pointer transition-colors">
-                    <ImageIcon className="w-4 h-4 text-[#D71920]" />
-                    <span>Pilih Gambar Desain (JPG / PNG)</span>
-                    <input
-                      type="file"
-                      accept="image/*"
-                      multiple
-                      onChange={handleDesignUpload}
-                      className="hidden"
-                    />
-                  </label>
-                  <span className="text-[11px] text-neutral-400">
-                    {designs.length} file dipilih
-                  </span>
-                </div>
-
-                {designs.length > 0 && (
-                  <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
-                    {designs.map((d) => (
-                      <div
-                        key={d.id}
-                        className="relative aspect-square rounded-xl overflow-hidden border border-neutral-200 bg-neutral-50 p-1"
-                      >
-                        <img
-                          src={d.dataUrl}
-                          alt={d.label}
-                          className="w-full h-full object-contain opacity-100 filter-none mix-blend-normal"
-                        />
-                      </div>
-                    ))}
-                  </div>
-                )}
+              <div className="pt-4 border-t border-neutral-100 animate-in fade-in duration-200">
+                <DesignUploader
+                  orderId={draftOrderId}
+                  designs={designs}
+                  onChange={setDesigns}
+                  materialName={material}
+                  disabled={isSubmitting}
+                />
               </div>
             )}
 
@@ -943,9 +931,7 @@ export const QuickOrder: React.FC<QuickOrderProps> = ({
                 disabled={isSubmitting}
                 className="flex items-center gap-2 px-6 py-3 bg-[#D71920] hover:bg-[#b8141a] disabled:opacity-60 text-white text-xs font-bold rounded-2xl transition-all shadow-md shadow-red-500/25 active:scale-[0.98]"
               >
-                <Zap
-                  className={`w-4 h-4 ${isSubmitting ? "animate-spin" : ""}`}
-                />
+                {isSubmitting ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
                 <span>
                   {isSubmitting
                     ? "Menyimpan ke Supabase..."

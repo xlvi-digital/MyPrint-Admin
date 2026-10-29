@@ -11,7 +11,8 @@ import {
   Settings, 
   ChevronRight,
   X,
-  MessageSquare
+  MessageSquare,
+  Database,
 } from 'lucide-react';
 
 export type NavItemKey = 
@@ -23,6 +24,7 @@ export type NavItemKey =
   | 'printing-queue' 
   | 'player-roster' 
   | 'completed' 
+  | 'master-data'
   | 'settings';
 
 interface SidebarProps {
@@ -92,6 +94,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
       label: 'Order Selesai',
       icon: <CheckCircle2 className="w-4 h-4 text-emerald-500" />,
       count: counts.completed,
+    },
+    {
+      key: 'master-data',
+      label: 'Data Master',
+      icon: <Database className="w-4 h-4 text-violet-500" />,
     },
     {
       key: 'settings',

@@ -10,27 +10,62 @@ interface UseRealtimeOrdersResult {
   status: RealtimeStatus;
   refreshOrders: () => Promise<void>;
   lastSyncedAt: Date | null;
+  isLoading: boolean;
+  isRefreshing: boolean;
+  error: string | null;
 }
 
-export const useRealtimeOrders = (initialOrders: Order[]): UseRealtimeOrdersResult => {
+export const useRealtimeOrders = (
+  initialOrders: Order[],
+  canConnect = true,
+): UseRealtimeOrdersResult => {
   const [orders, setOrders] = useState<Order[]>(initialOrders);
   const [status, setStatus] = useState<RealtimeStatus>(
     isSupabaseConfigured() ? 'connecting' : 'local_mode'
   );
   const [lastSyncedAt, setLastSyncedAt] = useState<Date | null>(new Date());
+  const [isLoading, setIsLoading] = useState(isSupabaseConfigured() && canConnect);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const isMountedRef = useRef(true);
+  const requestRef = useRef<Promise<void> | null>(null);
+  const hasLoadedRef = useRef(!isSupabaseConfigured());
 
-  const fetchLatest = useCallback(async () => {
-    try {
-      const latest = await supabaseOrderService.getOrders();
-      if (isMountedRef.current) {
-        setOrders(latest);
-        setLastSyncedAt(new Date());
+  const fetchLatest = useCallback((initial = false): Promise<void> => {
+    if (requestRef.current) return requestRef.current;
+    const showInitialLoading = initial || !hasLoadedRef.current;
+    if (showInitialLoading) setIsLoading(true);
+    else setIsRefreshing(true);
+    setError(null);
+    const request = (async () => {
+      try {
+        const latest = await supabaseOrderService.getOrders({ fallbackToLocal: false });
+        hasLoadedRef.current = true;
+        if (isMountedRef.current) {
+          setOrders(latest);
+          setLastSyncedAt(new Date());
+          setStatus('connected');
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Gagal memuat data order dari Supabase.';
+        console.warn('Order fetch failed:', message);
+        hasLoadedRef.current = true;
+        if (isMountedRef.current) {
+          setError(message);
+          setStatus('disconnected');
+        }
+      } finally {
+        if (isMountedRef.current) {
+          setIsLoading(false);
+          setIsRefreshing(false);
+        }
+        requestRef.current = null;
       }
-    } catch (err) {
-      console.warn('Realtime fetch failed:', err);
-    }
+    })();
+    requestRef.current = request;
+    return request;
   }, []);
+  const refreshOrders = useCallback(() => fetchLatest(false), [fetchLatest]);
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -38,15 +73,18 @@ export const useRealtimeOrders = (initialOrders: Order[]): UseRealtimeOrdersResu
 
     if (!client || !isSupabaseConfigured()) {
       setStatus('local_mode');
+      setIsLoading(false);
+      return;
+    }
+
+    if (!canConnect) {
+      setStatus('disconnected');
+      setIsLoading(false);
       return;
     }
 
     setStatus('connecting');
-
-    // Initial fetch from Supabase
-    fetchLatest().then(() => {
-      if (isMountedRef.current) setStatus('connected');
-    });
+    void fetchLatest(true);
 
     // Setup Supabase Realtime channel
     const channel = client
@@ -56,7 +94,7 @@ export const useRealtimeOrders = (initialOrders: Order[]): UseRealtimeOrdersResu
         { event: '*', schema: 'public', table: 'orders' },
         payload => {
           console.log('[Supabase Realtime] Order event received:', payload.eventType);
-          fetchLatest();
+          void refreshOrders();
         }
       )
       .on(
@@ -64,7 +102,7 @@ export const useRealtimeOrders = (initialOrders: Order[]): UseRealtimeOrdersResu
         { event: '*', schema: 'public', table: 'order_items' },
         payload => {
           console.log('[Supabase Realtime] Item event received:', payload.eventType);
-          fetchLatest();
+          void refreshOrders();
         }
       )
       .subscribe((subStatus, err) => {
@@ -81,12 +119,15 @@ export const useRealtimeOrders = (initialOrders: Order[]): UseRealtimeOrdersResu
       isMountedRef.current = false;
       client.removeChannel(channel);
     };
-  }, [fetchLatest]);
+  }, [canConnect, fetchLatest, refreshOrders]);
 
   return {
     orders,
     status,
-    refreshOrders: fetchLatest,
+    refreshOrders,
     lastSyncedAt,
+    isLoading,
+    isRefreshing,
+    error,
   };
 };

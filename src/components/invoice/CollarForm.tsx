@@ -1,31 +1,51 @@
-import React from 'react';
-import { CollarSpec, COMMON_COLLARS } from '../../types/order';
-import { Shirt, Upload, Trash2, Eye } from 'lucide-react';
+import React, { useState } from 'react';
+import { CollarSpec } from '../../types/order';
+import { Shirt, Upload, Trash2, LoaderCircle } from 'lucide-react';
+import { useMasterData } from '../../hooks/useMasterData';
+import { supabaseStorageService } from '../../services/supabase/storageService';
 
 interface CollarFormProps {
+  orderId: string;
   collar: CollarSpec;
   onChange: (collar: CollarSpec) => void;
+  preserveLegacyValues?: boolean;
 }
 
-export const CollarForm: React.FC<CollarFormProps> = ({ collar, onChange }) => {
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+export const CollarForm: React.FC<CollarFormProps> = ({ orderId, collar, onChange, preserveLegacyValues = true }) => {
+  const masterData = useMasterData();
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    if (!file.type.startsWith('image/')) {
-      alert('Format file tidak didukung. Gunakan file gambar.');
+    const validation = supabaseStorageService.validateFile(file);
+    if (!validation.valid) {
+      setUploadError(validation.error || 'File gambar tidak valid.');
+      e.target.value = '';
       return;
     }
 
-    const reader = new FileReader();
-    reader.onload = event => {
+    setIsUploading(true);
+    setUploadError(null);
+    try {
+      const result = await supabaseStorageService.uploadCollarImage(orderId, file);
+      if (!result.success || !result.publicUrl || !result.imagePath) {
+        throw new Error(result.error || 'Gagal mengunggah gambar kerah ke Supabase Storage.');
+      }
       onChange({
         ...collar,
-        imageUrl: event.target?.result as string,
+        imageUrl: result.publicUrl,
+        imagePath: result.imagePath,
+        updatedAt: new Date().toISOString(),
       });
-    };
-    reader.readAsDataURL(file);
-    e.target.value = '';
+    } catch (error) {
+      setUploadError(error instanceof Error ? error.message : 'Gagal mengunggah gambar kerah.');
+    } finally {
+      setIsUploading(false);
+      e.target.value = '';
+    }
   };
 
   const handleRemoveImage = () => {
@@ -57,15 +77,18 @@ export const CollarForm: React.FC<CollarFormProps> = ({ collar, onChange }) => {
               Pilihan Model Kerah
             </label>
             <select
-              value={COMMON_COLLARS.includes(collar.modelName) ? collar.modelName : 'CUSTOM'}
+              value={masterData.options('collar_models', collar.modelName, preserveLegacyValues).some(item => item.name === collar.modelName)
+                ? collar.modelName
+                : 'CUSTOM'}
               onChange={e => onChange({ ...collar, modelName: e.target.value })}
               className="w-full px-3 py-2 text-xs rounded-xl border border-neutral-200 bg-neutral-50/50 focus:bg-white focus:border-neutral-400 outline-none font-bold text-neutral-900 mb-2"
             >
-              {COMMON_COLLARS.map(c => (
-                <option key={c} value={c}>
-                  {c}
-                </option>
+              {masterData.options('collar_models', collar.modelName, preserveLegacyValues)
+                .filter(item => item.name !== 'CUSTOM')
+                .map(item => (
+                <option key={item.id} value={item.name}>{item.name}</option>
               ))}
+              <option value="CUSTOM">CUSTOM</option>
             </select>
           </div>
 
@@ -82,16 +105,20 @@ export const CollarForm: React.FC<CollarFormProps> = ({ collar, onChange }) => {
             />
           </div>
 
-          <label className="inline-flex items-center gap-2 px-3.5 py-2 text-xs font-semibold text-neutral-700 bg-neutral-100 hover:bg-neutral-200 rounded-xl cursor-pointer transition-colors">
-            <Upload className="w-3.5 h-3.5 text-neutral-500" />
-            <span>{collar.imageUrl ? 'Ganti Foto Kerah' : 'Upload Foto Contoh Kerah'}</span>
+          <label className={`inline-flex items-center gap-2 px-3.5 py-2 text-xs font-semibold text-neutral-700 bg-neutral-100 hover:bg-neutral-200 rounded-xl transition-colors ${isUploading ? 'cursor-wait opacity-60' : 'cursor-pointer'}`}>
+            {isUploading
+              ? <LoaderCircle className="w-3.5 h-3.5 animate-spin text-neutral-500" />
+              : <Upload className="w-3.5 h-3.5 text-neutral-500" />}
+            <span>{isUploading ? 'Mengunggah...' : collar.imageUrl ? 'Ganti Foto Kerah' : 'Upload Foto Contoh Kerah'}</span>
             <input
               type="file"
               accept="image/*"
               onChange={handleImageUpload}
+              disabled={isUploading}
               className="hidden"
             />
           </label>
+          {uploadError && <p className="mt-2 text-xs text-red-600" role="alert">{uploadError}</p>}
         </div>
 
         {/* Collar Mockup Preview */}

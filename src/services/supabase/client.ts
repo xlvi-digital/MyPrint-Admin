@@ -18,12 +18,21 @@ export const sanitizeSupabaseUrl = (rawUrl?: string | null): string => {
 
 // Keys from env or custom runtime localStorage configuration
 const getStoredUrl = (): string => {
-  const local = localStorage.getItem('myprintin_supabase_url');
+  let local = '';
+  try {
+    local = localStorage.getItem('myprintin_supabase_url') || '';
+  } catch (error) {
+    console.warn('Could not read the saved Supabase URL; checking environment configuration.', error);
+  }
   if (local && local.trim()) {
     const cleanLocal = sanitizeSupabaseUrl(local);
     // Auto-heal localStorage if it was previously poisoned with /rest/v1
     if (cleanLocal !== local.trim()) {
-      localStorage.setItem('myprintin_supabase_url', cleanLocal);
+      try {
+        localStorage.setItem('myprintin_supabase_url', cleanLocal);
+      } catch (error) {
+        console.warn('Could not update the saved Supabase URL.', error);
+      }
     }
     return cleanLocal;
   }
@@ -37,7 +46,12 @@ const getStoredUrl = (): string => {
 };
 
 const getStoredKey = (): string => {
-  const local = localStorage.getItem('myprintin_supabase_key');
+  let local = '';
+  try {
+    local = localStorage.getItem('myprintin_supabase_key') || '';
+  } catch (error) {
+    console.warn('Could not read the saved Supabase key; checking environment configuration.', error);
+  }
   if (local && local.trim()) return local.trim();
 
   const envKey =
@@ -127,6 +141,7 @@ export const saveSupabaseCredentials = (url: string, key: string): boolean => {
     localStorage.setItem('myprintin_supabase_key', cleanKey);
     cachedClient = null; // force recreate next time getSupabaseClient() is called
     hasLoggedSafeDiagnostics = false;
+    window.dispatchEvent(new Event('myprintin:supabase-config-change'));
     return true;
   } catch {
     return false;
@@ -134,12 +149,17 @@ export const saveSupabaseCredentials = (url: string, key: string): boolean => {
 };
 
 export const clearSupabaseCredentials = (): void => {
-  localStorage.removeItem('myprintin_supabase_url');
-  localStorage.removeItem('myprintin_supabase_key');
+  try {
+    localStorage.removeItem('myprintin_supabase_url');
+    localStorage.removeItem('myprintin_supabase_key');
+  } catch (error) {
+    console.warn('Could not remove saved Supabase credentials from local storage.', error);
+  }
   cachedClient = null;
   lastUrl = '';
   lastKey = '';
   hasLoggedSafeDiagnostics = false;
+  window.dispatchEvent(new Event('myprintin:supabase-config-change'));
 };
 
 export const getSupabaseConfig = () => {

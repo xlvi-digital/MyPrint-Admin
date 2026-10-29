@@ -10,12 +10,15 @@ import {
   Phone, 
   Hash, 
   ArrowRight,
-  Sparkles
+  Sparkles,
+  LoaderCircle,
 } from 'lucide-react';
-import { Order, COMMON_MATERIALS, COMMON_COLLARS } from '../../types/order';
+import { Order, SalesChannel } from '../../types/order';
 import { getTodayDateString } from '../../utils/formatters';
 import { generateUuid } from '../../utils/uuid';
 import { WhatsAppParserModal } from '../order/WhatsAppParserModal';
+import { SalesOrderFields } from '../order/SalesOrderFields';
+import { useMasterData } from '../../hooks/useMasterData';
 
 interface QuickOrderModalProps {
   isOpen: boolean;
@@ -34,6 +37,9 @@ export const QuickOrderModal: React.FC<QuickOrderModalProps> = ({
   const [productType, setProductType] = useState('Jersey Sublime');
   const [material, setMaterial] = useState('Milano');
   const [collarModel, setCollarModel] = useState('POLO KANCING 2');
+  const [salesChannel, setSalesChannel] = useState<SalesChannel>('Offline');
+  const [externalOrderNumber, setExternalOrderNumber] = useState('');
+  const masterData = useMasterData();
   const [quantity, setQuantity] = useState<number>(20);
   const [unitPrice, setUnitPrice] = useState<number>(110000);
   const [usePlayerDetails, setUsePlayerDetails] = useState(false);
@@ -64,10 +70,19 @@ export const QuickOrderModal: React.FC<QuickOrderModalProps> = ({
   };
 
   const handleSubmit = async () => {
+    if (isSubmitting) return;
     const err: Record<string, string> = {};
     if (!name.trim()) err.name = 'Nama pemesan wajib diisi';
     if (!phone.trim()) err.phone = 'No WhatsApp wajib diisi';
     if (!quantity || quantity <= 0) err.quantity = 'Jumlah pcs minimal 1';
+    if (!externalOrderNumber.trim()) err.externalOrderNumber = 'Nomor pesanan wajib diisi';
+    if (masterData.isLoading) err.masterData = 'Data master masih dimuat. Coba simpan kembali sebentar lagi.';
+    else if (masterData.error) err.masterData = masterData.error;
+    else {
+      if (!masterData.data.product_types.some(item => item.isActive && item.name === productType)) err.productType = 'Pilih jenis produk aktif dari Data Master.';
+      if (!masterData.data.materials.some(item => item.isActive && item.name === material)) err.material = 'Pilih jenis bahan aktif dari Data Master.';
+      if (!masterData.data.collar_models.some(item => item.isActive && item.name === collarModel)) err.collarModel = 'Pilih model kerah aktif dari Data Master.';
+    }
 
     if (Object.keys(err).length > 0) {
       setErrors(err);
@@ -81,6 +96,8 @@ export const QuickOrderModal: React.FC<QuickOrderModalProps> = ({
     const newOrder: Order = {
       id: newId,
       orderNumber,
+      salesChannel,
+      externalOrderNumber: externalOrderNumber.trim(),
       customer: {
         name: name.trim().toUpperCase(),
         phone: phone.trim(),
@@ -247,6 +264,18 @@ export const QuickOrderModal: React.FC<QuickOrderModalProps> = ({
             </div>
           </div>
 
+          <SalesOrderFields
+            salesChannel={salesChannel}
+            externalOrderNumber={externalOrderNumber}
+            onChange={(channel, number) => {
+              setSalesChannel(channel);
+              setExternalOrderNumber(number);
+            }}
+            compact
+          />
+          {errors.externalOrderNumber && <p className="text-[11px] font-semibold text-red-600">{errors.externalOrderNumber}</p>}
+          {errors.masterData && <p className="text-[11px] font-semibold text-red-600">{errors.masterData}</p>}
+
           {/* Row 2: Tim & Produk */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
@@ -271,12 +300,11 @@ export const QuickOrderModal: React.FC<QuickOrderModalProps> = ({
                 onChange={e => setProductType(e.target.value)}
                 className="w-full px-3 py-2 text-xs rounded-xl border border-neutral-200 bg-neutral-50/50 focus:bg-white outline-none font-semibold cursor-pointer"
               >
-                <option value="Jersey Sublime">Jersey Sublime</option>
-                <option value="Jersey Sublime Setelan">Jersey Sublime Setelan</option>
-                <option value="Jersey Running / Singlet">Jersey Running / Singlet</option>
-                <option value="Jaket / Hoodie Sublime">Jaket / Hoodie Sublime</option>
-                <option value="Kaos Event Sublime">Kaos Event Sublime</option>
+                {masterData.options('product_types', productType, false).map(item => (
+                  <option key={item.id} value={item.name}>{item.name}</option>
+                ))}
               </select>
+              {errors.productType && <p className="mt-1 text-[10px] text-red-600">{errors.productType}</p>}
             </div>
           </div>
 
@@ -291,12 +319,11 @@ export const QuickOrderModal: React.FC<QuickOrderModalProps> = ({
                 onChange={e => setMaterial(e.target.value)}
                 className="w-full px-3 py-2 text-xs rounded-xl border border-neutral-200 bg-neutral-50/50 focus:bg-white outline-none font-black text-[#D71920] cursor-pointer"
               >
-                {COMMON_MATERIALS.filter(m => m !== 'Custom').map(m => (
-                  <option key={m} value={m}>
-                    {m}
-                  </option>
+                {masterData.options('materials', material, false).filter(item => item.name !== 'Custom').map(item => (
+                  <option key={item.id} value={item.name}>{item.name}</option>
                 ))}
               </select>
+              {errors.material && <p className="mt-1 text-[10px] text-red-600">{errors.material}</p>}
             </div>
 
             <div>
@@ -323,12 +350,11 @@ export const QuickOrderModal: React.FC<QuickOrderModalProps> = ({
               onChange={e => setCollarModel(e.target.value)}
               className="w-full px-3 py-2 text-xs rounded-xl border border-neutral-200 bg-neutral-50/50 focus:bg-white outline-none font-bold text-neutral-800 cursor-pointer"
             >
-              {COMMON_COLLARS.filter(c => c !== 'CUSTOM').map(c => (
-                <option key={c} value={c}>
-                  {c}
-                </option>
+              {masterData.options('collar_models', collarModel, false).filter(item => item.name !== 'CUSTOM').map(item => (
+                <option key={item.id} value={item.name}>{item.name}</option>
               ))}
             </select>
+            {errors.collarModel && <p className="mt-1 text-[10px] text-red-600">{errors.collarModel}</p>}
           </div>
 
           {/* Notes textarea */}
@@ -382,7 +408,7 @@ export const QuickOrderModal: React.FC<QuickOrderModalProps> = ({
               disabled={isSubmitting}
               className="flex items-center gap-1.5 px-5 py-2.5 bg-[#D71920] hover:bg-[#b8141a] disabled:opacity-60 text-white font-bold rounded-xl transition-all shadow-sm shadow-red-500/20 active:scale-[0.98]"
             >
-              <Zap className={`w-4 h-4 ${isSubmitting ? 'animate-spin' : ''}`} />
+              {isSubmitting ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
               <span>{isSubmitting ? 'Menyimpan ke Supabase...' : 'Buat Order Sekarang'}</span>
             </button>
           </div>

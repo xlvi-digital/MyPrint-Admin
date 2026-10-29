@@ -1,21 +1,25 @@
 import React, { useState } from 'react';
-import { Product, COMMON_MATERIALS } from '../../types/order';
+import { Product } from '../../types/order';
 import { Shirt, Plus, DollarSign, Tag, Layers } from 'lucide-react';
 import { formatRupiah } from '../../utils/formatters';
+import { useMasterData } from '../../hooks/useMasterData';
 
 interface ProductFormProps {
   product: Product;
   onChange: (product: Product) => void;
   errors?: Partial<Record<keyof Product, string>>;
+  preserveLegacyValues?: boolean;
 }
 
 export const ProductForm: React.FC<ProductFormProps> = ({
   product,
   onChange,
   errors = {},
+  preserveLegacyValues = true,
 }) => {
   const [customMaterialInput, setCustomMaterialInput] = useState('');
   const [showCustomMaterial, setShowCustomMaterial] = useState(false);
+  const masterData = useMasterData();
 
   const updateNumeric = (
     field: 'totalQuantity' | 'unitPrice' | 'downPayment',
@@ -85,15 +89,11 @@ export const ProductForm: React.FC<ProductFormProps> = ({
             onChange={e => onChange({ ...product, productType: e.target.value })}
             className="w-full px-3 py-2 text-xs rounded-xl border border-neutral-200 bg-neutral-50/50 focus:bg-white focus:border-neutral-400 outline-none transition-all font-medium"
           >
-            <option value="Jersey Sublime">Jersey Sublime</option>
-            <option value="Jersey Sublime Setelan">Jersey Sublime Setelan (Atasan + Celana)</option>
-            <option value="Jersey Running / Singlet">Jersey Running / Singlet</option>
-            <option value="Jaket / Hoodie Sublime">Jaket / Hoodie Sublime</option>
-            <option value="Kaos Event Sublime">Kaos Event Sublime</option>
-            <option value="Celana Olahraga / Lotto">Celana Olahraga / Lotto</option>
-            <option value="Rompi Futsal / Basket">Rompi Futsal / Basket</option>
-            <option value="Custom Apparel">Custom Apparel</option>
+            {masterData.options('product_types', product.productType, preserveLegacyValues).map(item => (
+              <option key={item.id} value={item.name}>{item.name}</option>
+            ))}
           </select>
+          {errors.productType && <p className="mt-1 text-[11px] text-red-600">{errors.productType}</p>}
           <p className="text-[10px] text-neutral-400 mt-1">Format garmen yang diproduksi</p>
         </div>
 
@@ -106,7 +106,9 @@ export const ProductForm: React.FC<ProductFormProps> = ({
           {!showCustomMaterial ? (
             <div className="flex gap-1.5">
               <select
-                value={COMMON_MATERIALS.includes(product.material) ? product.material : 'Custom'}
+                value={masterData.options('materials', product.material, preserveLegacyValues).some(item => item.name === product.material)
+                  ? product.material
+                  : 'Custom'}
                 onChange={e => handleMaterialSelect(e.target.value)}
                 className={`w-full px-3 py-2 text-xs rounded-xl border font-bold text-[#D71920] outline-none transition-all ${
                   errors.material
@@ -114,11 +116,12 @@ export const ProductForm: React.FC<ProductFormProps> = ({
                     : 'border-neutral-200 bg-neutral-50/50 focus:bg-white focus:border-neutral-400'
                 }`}
               >
-                {COMMON_MATERIALS.map(m => (
-                  <option key={m} value={m}>
-                    {m}
-                  </option>
+                {masterData.options('materials', product.material, preserveLegacyValues)
+                  .filter(item => item.name !== 'Custom')
+                  .map(item => (
+                  <option key={item.id} value={item.name}>{item.name}</option>
                 ))}
+                <option value="Custom">Custom</option>
               </select>
               <button
                 type="button"
@@ -156,6 +159,7 @@ export const ProductForm: React.FC<ProductFormProps> = ({
             </div>
           )}
           {errors.material && <p className="text-[11px] text-red-600 mt-1">{errors.material}</p>}
+          {masterData.error && <p className="mt-1 text-[10px] text-amber-700">{masterData.error}</p>}
           <p className="text-[10px] text-neutral-400 mt-1">
             Saat ini: <span className="font-semibold text-neutral-800">{product.material || 'Belum dipilih'}</span>
           </p>

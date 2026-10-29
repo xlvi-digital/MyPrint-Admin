@@ -104,7 +104,7 @@ export const OrderPrintDocument: React.FC<OrderPrintDocumentProps> = ({
             </div>
           </div>
 
-          {/* Row 3: Tanggal & Keterangan */}
+          {/* Row 3: Tanggal, channel, and external order reference */}
           <div className="grid grid-cols-12">
             <div className="col-span-3 sm:col-span-2 p-1.5 sm:p-2 bg-neutral-100 border-r-2 border-black">
               TANGGAL
@@ -112,8 +112,11 @@ export const OrderPrintDocument: React.FC<OrderPrintDocumentProps> = ({
             <div className="col-span-4 sm:col-span-5 p-1.5 sm:p-2 border-r-2 border-black font-mono">
               {formatDateId(customer.orderDate)}
             </div>
-            <div className="col-span-5 sm:col-span-5 p-1.5 sm:p-2 bg-neutral-100 text-center tracking-widest font-black">
-              KETERANGAN
+            <div className="col-span-5 sm:col-span-5 p-1.5 sm:p-2 bg-neutral-100 text-center font-black tracking-wide break-words [overflow-wrap:anywhere]">
+              <div>KETERANGAN</div>
+              <div className="mt-0.5 text-[8px] leading-tight">
+                {order.salesChannel || 'Offline'} · NO. PESANAN: {order.externalOrderNumber || '-'}
+              </div>
             </div>
           </div>
         </div>
