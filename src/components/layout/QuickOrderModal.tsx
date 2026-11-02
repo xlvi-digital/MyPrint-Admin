@@ -19,6 +19,9 @@ import { generateUuid } from '../../utils/uuid';
 import { WhatsAppParserModal } from '../order/WhatsAppParserModal';
 import { SalesOrderFields } from '../order/SalesOrderFields';
 import { useMasterData } from '../../hooks/useMasterData';
+import { PlayerDetail } from '../../types/order';
+import { SizeQuantityTable } from '../invoice/SizeQuantityTable';
+import { getOrderTotalQuantity, isValidSizeQuantity } from '../../utils/orderSizing';
 
 interface QuickOrderModalProps {
   isOpen: boolean;
@@ -33,22 +36,21 @@ export const QuickOrderModal: React.FC<QuickOrderModalProps> = ({
 }) => {
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
-  const [teamName, setTeamName] = useState('');
   const [productType, setProductType] = useState('Jersey Sublime');
   const [material, setMaterial] = useState('Milano');
   const [collarModel, setCollarModel] = useState('POLO KANCING 2');
   const [salesChannel, setSalesChannel] = useState<SalesChannel>('Offline');
   const [externalOrderNumber, setExternalOrderNumber] = useState('');
   const masterData = useMasterData();
-  const [quantity, setQuantity] = useState<number>(20);
+  const [sizeQuantities, setSizeQuantities] = useState<PlayerDetail[]>([]);
   const [unitPrice, setUnitPrice] = useState<number>(110000);
-  const [usePlayerDetails, setUsePlayerDetails] = useState(false);
   const [notes, setNotes] = useState('');
   const [isWaModalOpen, setIsWaModalOpen] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [draftOrderId, setDraftOrderId] = useState(() => generateUuid());
+  const quantity = getOrderTotalQuantity('size-quantity', sizeQuantities);
 
   const nameInputRef = useRef<HTMLInputElement>(null);
 
@@ -74,14 +76,17 @@ export const QuickOrderModal: React.FC<QuickOrderModalProps> = ({
     const err: Record<string, string> = {};
     if (!name.trim()) err.name = 'Nama pemesan wajib diisi';
     if (!phone.trim()) err.phone = 'No WhatsApp wajib diisi';
-    if (!quantity || quantity <= 0) err.quantity = 'Jumlah pcs minimal 1';
-    if (!externalOrderNumber.trim()) err.externalOrderNumber = 'Nomor pesanan wajib diisi';
+    if (!quantity) err.quantity = 'Isi setidaknya satu baris ukuran dengan jumlah PCS valid.';
+    if (salesChannel !== 'Offline' && !externalOrderNumber.trim()) err.externalOrderNumber = 'Nomor pesanan wajib diisi';
     if (masterData.isLoading) err.masterData = 'Data master masih dimuat. Coba simpan kembali sebentar lagi.';
     else if (masterData.error) err.masterData = masterData.error;
     else {
       if (!masterData.data.product_types.some(item => item.isActive && item.name === productType)) err.productType = 'Pilih jenis produk aktif dari Data Master.';
       if (!masterData.data.materials.some(item => item.isActive && item.name === material)) err.material = 'Pilih jenis bahan aktif dari Data Master.';
       if (!masterData.data.collar_models.some(item => item.isActive && item.name === collarModel)) err.collarModel = 'Pilih model kerah aktif dari Data Master.';
+      if (sizeQuantities.filter(isValidSizeQuantity).some(player => !masterData.data.jersey_sizes.some(
+        size => size.isActive && (size.code === player.size || size.name === player.size),
+      ))) err.playerSizes = 'Pilih ukuran jersey aktif dari Data Master.';
     }
 
     if (Object.keys(err).length > 0) {
@@ -97,11 +102,10 @@ export const QuickOrderModal: React.FC<QuickOrderModalProps> = ({
       id: newId,
       orderNumber,
       salesChannel,
-      externalOrderNumber: externalOrderNumber.trim(),
+      externalOrderNumber: salesChannel === 'Offline' ? '' : externalOrderNumber.trim(),
       customer: {
         name: name.trim().toUpperCase(),
         phone: phone.trim(),
-        teamName: teamName.trim().toUpperCase(),
         orderDate: getTodayDateString(),
         orderNumber,
       },
@@ -118,7 +122,8 @@ export const QuickOrderModal: React.FC<QuickOrderModalProps> = ({
         downPayment: Math.round(totalPrice * 0.5),
         remainingPayment: Math.round(totalPrice * 0.5),
       },
-      players: [],
+      inputMode: 'size-quantity',
+      players: sizeQuantities,
       useTableThreshold: 5,
       printingMachines: [
         { id: 'm1', name: 'MESIN EPSON F7270' },
@@ -159,12 +164,24 @@ export const QuickOrderModal: React.FC<QuickOrderModalProps> = ({
   const handleApplyWhatsApp = (res: any) => {
     if (res.customerName) setName(res.customerName);
     if (res.phone) setPhone(res.phone);
-    if (res.teamName) setTeamName(res.teamName);
     if (res.material) setMaterial(res.material);
-    if (res.quantity) setQuantity(res.quantity);
     if (res.productType) setProductType(res.productType);
     if (res.notes && res.notes.length > 0) setNotes(res.notes.join('\n'));
-    if (res.players && res.players.length > 0) setUsePlayerDetails(true);
+    if (res.players && res.players.length > 0) {
+      const bySize = new Map<string, number>();
+      res.players.forEach((player: { size: string; quantity?: number }) => {
+        const size = player.size?.trim().toUpperCase();
+        const quantity = Number(player.quantity) || 1;
+        if (size && size !== '-') bySize.set(size, (bySize.get(size) || 0) + quantity);
+      });
+      setSizeQuantities([...bySize.entries()].map(([size, quantity], index) => ({
+        id: `size-${Date.now()}-${index}`,
+        name: '',
+        number: '',
+        size,
+        quantity,
+      })));
+    }
   };
 
   useEffect(() => {
@@ -266,6 +283,7 @@ export const QuickOrderModal: React.FC<QuickOrderModalProps> = ({
 
           <SalesOrderFields
             salesChannel={salesChannel}
+            orderNumber=""
             externalOrderNumber={externalOrderNumber}
             onChange={(channel, number) => {
               setSalesChannel(channel);
@@ -273,24 +291,12 @@ export const QuickOrderModal: React.FC<QuickOrderModalProps> = ({
             }}
             compact
           />
-          {errors.externalOrderNumber && <p className="text-[11px] font-semibold text-red-600">{errors.externalOrderNumber}</p>}
+          {salesChannel !== 'Offline' && errors.externalOrderNumber && <p className="text-[11px] font-semibold text-red-600">{errors.externalOrderNumber}</p>}
           {errors.masterData && <p className="text-[11px] font-semibold text-red-600">{errors.masterData}</p>}
+          {errors.playerSizes && <p className="text-[11px] font-semibold text-red-600">{errors.playerSizes}</p>}
 
-          {/* Row 2: Tim & Produk */}
+          {/* Row 2: Produk */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-semibold text-neutral-700 mb-1">
-                Nama Tim / Instansi (Opsional)
-              </label>
-              <input
-                type="text"
-                value={teamName}
-                onChange={e => setTeamName(e.target.value.toUpperCase())}
-                placeholder="PASDAMA PASKIBRA"
-                className="w-full px-3 py-2 text-xs rounded-xl border border-neutral-200 bg-neutral-50/50 focus:bg-white focus:border-[#D71920] outline-none font-semibold uppercase"
-              />
-            </div>
-
             <div>
               <label className="block text-xs font-semibold text-neutral-700 mb-1">
                 Jenis Produk
@@ -327,18 +333,13 @@ export const QuickOrderModal: React.FC<QuickOrderModalProps> = ({
             </div>
 
             <div>
-              <label className="block text-xs font-bold text-neutral-700 mb-1">
-                Total Jumlah (Pcs) <span className="text-[#D71920]">*</span>
-              </label>
-              <input
-                type="number"
-                min="1"
-                value={quantity || ''}
-                onChange={e => setQuantity(Math.max(1, parseInt(e.target.value) || 0))}
-                className="w-full px-3 py-2 text-xs rounded-xl border border-neutral-200 bg-neutral-50/50 focus:bg-white focus:border-[#D71920] outline-none font-mono font-black text-neutral-900"
-              />
+              <label className="block text-xs font-bold text-neutral-700 mb-1">Total PCS Otomatis</label>
+              <div className="rounded-xl border border-neutral-200 bg-neutral-100 px-3 py-2 font-mono text-xs font-black text-neutral-900">{quantity} PCS</div>
+              {errors.quantity && <p className="mt-1 text-[10px] text-red-600">{errors.quantity}</p>}
             </div>
           </div>
+
+          <SizeQuantityTable rows={sizeQuantities} onChange={setSizeQuantities} />
 
           {/* Model Kerah */}
           <div>

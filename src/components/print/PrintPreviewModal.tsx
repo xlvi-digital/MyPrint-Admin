@@ -2,6 +2,7 @@ import React from 'react';
 import { Order } from '../../types/order';
 import { InvoicePreviewA4 } from '../invoice/InvoicePreviewA4';
 import { X, Printer, Download, CheckCircle2, AlertTriangle, FileText, Info } from 'lucide-react';
+import { getOrderTotalQuantity, resolveOrderInputMode } from '../../utils/orderSizing';
 
 interface PrintPreviewModalProps {
   isOpen: boolean;
@@ -22,9 +23,10 @@ export const PrintPreviewModal: React.FC<PrintPreviewModalProps> = ({
 
   if (!isOpen || !order) return null;
 
-  const totalPlayerQty = (order.players || []).reduce((sum, p) => sum + (Number(p.quantity) || 1), 0);
-  const totalDisplayQty = order.product?.totalQuantity || totalPlayerQty || 0;
-  const isMatch = totalPlayerQty === totalDisplayQty;
+  const inputMode = resolveOrderInputMode(order.inputMode, order.players || []);
+  const totalPlayerQty = getOrderTotalQuantity(inputMode, order.players || []);
+  const totalDisplayQty = (order.players || []).length ? totalPlayerQty : order.product?.totalQuantity || 0;
+  const isMatch = (order.players || []).length === 0 || totalPlayerQty === totalDisplayQty;
 
   const handleDownloadClick = async () => {
     if (isDownloading) return;

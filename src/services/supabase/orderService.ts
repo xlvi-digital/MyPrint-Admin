@@ -5,6 +5,7 @@ import { authRoleService } from './authRoleService';
 import { supabaseStorageService } from './storageService';
 import { isValidUuid, generateUuid } from '../../utils/uuid';
 import { masterDataService } from './masterDataService';
+import { isValidRosterPlayer, isValidSizeQuantity, resolveOrderInputMode } from '../../utils/orderSizing';
 
 export interface ActivityLog {
   id: string;
@@ -98,10 +99,19 @@ const mapDbRowToOrder = (
       downPayment: Number(row.down_payment) || 0,
       remainingPayment: Number(row.remaining_payment) || 0,
     },
+    inputMode: resolveOrderInputMode(
+      undefined,
+      players,
+    ),
     players,
     useTableThreshold: row.use_table_threshold ?? 5,
     printingMachines: mappedPrinting.length > 0 ? mappedPrinting : [{ id: '1', name: 'EPSON F7270' }],
     designs: mappedDesigns,
+    features: {
+      designs: Boolean(row.use_designs ?? mappedDesigns.length > 0),
+      collarRib: Boolean(row.use_collar_rib ?? collarRow),
+      notes: Boolean(row.use_notes ?? row.notes),
+    },
     collar: {
       modelName: collarRow?.model_name || 'POLO KANCING 2',
       imageUrl: collarRow?.image_url ? supabaseStorageService.resolveImageUrl(collarRow.image_url) : undefined,
@@ -245,7 +255,9 @@ export const supabaseOrderService = {
     if (!isValidUuid(order.id)) {
       order = { ...order, id: generateUuid() };
     }
-
+    if (order.salesChannel === 'Offline' && order.externalOrderNumber) {
+      order = { ...order, externalOrderNumber: '' };
+    }
     if (!client || !isSupabaseConfigured()) {
       return {
         success: false,
@@ -282,22 +294,33 @@ export const supabaseOrderService = {
 
       for (let attempt = 0; attempt < maxNumberAttempts; attempt++) {
         if (!isExistingOrder) {
-          const { data: allocatedNumber, error: allocateError } = await client.rpc(
-            'next_order_number',
-            {
-              p_year: new Date().getFullYear(),
-              p_order_id: order.id,
-              p_force_new: attempt > 0,
-            },
-          );
+          const isOfflineOrder = order.salesChannel === 'Offline';
+          const rpcName = isOfflineOrder
+            ? 'next_offline_order_number'
+            : 'next_order_number';
+          const rpcArgs = isOfflineOrder
+            ? {
+                p_order_date: order.customer.orderDate || new Date().toISOString().split('T')[0],
+                p_order_id: order.id,
+                p_force_new: attempt > 0,
+              }
+            : {
+                p_year: new Date().getFullYear(),
+                p_order_id: order.id,
+                p_force_new: attempt > 0,
+              };
+          const { data: allocatedNumber, error: allocateError } = await client.rpc(rpcName, rpcArgs);
 
           if (allocateError || typeof allocatedNumber !== 'string') {
             const message = allocateError?.message || 'RPC tidak mengembalikan nomor order.';
             const missingRpc = allocateError?.code === 'PGRST202'
               || /schema cache|could not find the function/i.test(message);
+            const requiredMigrations = isOfflineOrder
+              ? 'migration_offline_order_numbers.sql dan migration_order_optional_feature_flags.sql'
+              : 'migration_atomic_order_numbers.sql dan migration_order_optional_feature_flags.sql';
             const instruction = missingRpc
-              ? 'Jalankan migration_atomic_order_numbers.sql di project Supabase yang sama dengan URL aplikasi, lalu pastikan schema cache PostgREST sudah dimuat ulang.'
-              : 'Pastikan migration_atomic_order_numbers.sql sudah diterapkan.';
+              ? `Jalankan ${requiredMigrations} di project Supabase yang sama dengan URL aplikasi, lalu pastikan schema cache PostgREST sudah dimuat ulang.`
+              : `Pastikan ${requiredMigrations} sudah diterapkan.`;
             throw new Error(
               `Gagal membuat nomor order aman di database: ${message}. ${instruction}`,
             );
@@ -318,7 +341,9 @@ export const supabaseOrderService = {
           id: order.id,
           order_number: order.orderNumber,
           sales_channel: order.salesChannel || 'Offline',
-          external_order_number: order.externalOrderNumber?.trim() || null,
+          external_order_number: order.salesChannel === 'Offline'
+            ? null
+            : order.externalOrderNumber?.trim() || null,
           customer_name: order.customer.name.trim(),
           customer_phone: order.customer.phone ? order.customer.phone.trim() : null,
           customer_email: order.customer.email ? order.customer.email.trim() : null,
@@ -340,7 +365,10 @@ export const supabaseOrderService = {
           down_payment: Number(order.product.downPayment) || 0,
           remaining_payment: Number(order.product.remainingPayment) || 0,
           use_table_threshold: order.useTableThreshold ?? 5,
-          notes: order.notes || null,
+          notes: order.features?.notes === false ? null : order.notes || null,
+          use_designs: order.features?.designs ?? order.designs.length > 0,
+          use_collar_rib: order.features?.collarRib ?? true,
+          use_notes: order.features?.notes ?? Boolean(order.notes),
           production_status: order.productionStatus || 'DRAFT',
           designer_name: order.signoff.designerName || null,
           designer_initial: order.signoff.designerInitial || null,
@@ -374,9 +402,12 @@ export const supabaseOrderService = {
 
       if (upsertOrderError || !upsertData) {
         const detail = upsertOrderError?.message || 'Database tidak mengembalikan order yang tersimpan.';
+        const missingFeatureFlags = /use_(designs|collar_rib|notes)/i.test(detail);
         const conflictMessage = exhaustedOrderNumberConflict
           ? 'Nomor order masih bentrok setelah 3 alokasi; tidak ada roster yang ditulis. Silakan coba lagi.'
-          : detail;
+          : missingFeatureFlags
+            ? `${detail}. Jalankan migration_order_optional_feature_flags.sql.`
+            : detail;
         console.error('[Supabase] Upsert Order Error:', upsertOrderError);
         return {
           success: false,
@@ -424,17 +455,20 @@ export const supabaseOrderService = {
         };
       }
 
-      if (order.players && order.players.length > 0) {
+      const rowsToSave = order.inputMode === 'size-quantity'
+        ? (order.players || []).filter(isValidSizeQuantity)
+        : (order.players || []).filter(isValidRosterPlayer);
+      if (rowsToSave.length > 0) {
         // Build roster payload without sending temporary frontend IDs (e.g. "p-...") to the UUID column.
         // Let PostgreSQL auto-generate genuine UUIDs via default gen_random_uuid().
-        const itemsToInsert = await Promise.all(order.players.map(async (p, index) => {
+        const itemsToInsert = await Promise.all(rowsToSave.map(async (p, index) => {
           const itemPayload: Record<string, any> = {
             order_id: savedOrderId,
-            name: p.name.trim(),
-            number: p.number ? String(p.number).trim() : '',
+            name: order.inputMode === 'size-quantity' ? '' : p.name.trim(),
+            number: order.inputMode === 'size-quantity' ? '' : (p.number ? String(p.number).trim() : ''),
             size: p.size || 'L',
             size_id: await masterDataService.resolveId('jersey_sizes', p.size || 'L'),
-            quantity: Number(p.quantity) || 1,
+            quantity: order.inputMode === 'size-quantity' ? Number(p.quantity) : 1,
             notes: p.notes ? p.notes.trim() : null,
             sleeve: p.sleeve || null,
             sort_order: index + 1,
@@ -668,7 +702,7 @@ export const supabaseOrderService = {
 
       // 5. Sync Collar Spec & Visual Reference
       await client.from('order_collar').delete().eq('order_id', savedOrderId);
-      if (order.collar) {
+      if (order.features?.collarRib !== false && order.collar) {
           const collarImageUrl = order.collar.imageUrl || order.collar.imagePath || null;
         const fullPayload: Record<string, any> = {
           order_id: savedOrderId,
@@ -826,7 +860,7 @@ export const supabaseOrderService = {
       // 2. Touch order updated_at
       await client
         .from('orders')
-        .update({ updated_at: new Date().toISOString() })
+        .update({ updated_at: new Date().toISOString(), use_collar_rib: true })
         .eq('id', orderId);
 
       // 3. SAFE REPLACEMENT: Only delete old image after database update succeeded!

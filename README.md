@@ -48,6 +48,8 @@ Order forms continue to read the legacy material, product, size, and collar text
 
 Next, run `supabase/migration_secure_master_and_order_designs.sql`. It restricts the four master tables, orders, roster rows, collar/printing rows, profiles, activity logs, and order-design metadata to authenticated owner/admin accounts. It also creates the private `order-designs-private` bucket for new design uploads. Existing rows and internal order numbers are preserved. Legacy collar-reference image URLs remain publicly readable for compatibility, but uploads/updates/deletes require an owner/admin account.
 
+After those migrations, run `supabase/migration_offline_order_numbers.sql` and `supabase/migration_order_optional_feature_flags.sql` in the Supabase SQL Editor. The first enables atomic monthly `MPCJR-MMYY-NNNN` numbers for new Offline orders while leaving other sales channels on the existing yearly generator. The second stores optional-feature activation flags and infers their initial values from existing order data. Both migrations are included in `supabase/schema.sql` for new databases.
+
 Configure Supabase Auth before deploying:
 
 1. Enable Email/Password sign-in in Supabase Auth. Create or invite the initial owner using the Supabase Dashboard; disable public sign-ups if they are not needed.

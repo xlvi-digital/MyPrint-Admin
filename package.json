@@ -7,7 +7,7 @@
     "dev": "vite --port=3000 --host=0.0.0.0",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "tsx --test src/services/rosterImport.test.ts",
+    "test": "tsx --test src/services/rosterImport.test.ts src/utils/orderSizing.test.ts src/utils/rosterPagination.test.ts src/utils/productionRoster.test.ts src/components/print/OrderPrintDocument.test.tsx src/components/order/SalesOrderFields.test.tsx",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit"
   },

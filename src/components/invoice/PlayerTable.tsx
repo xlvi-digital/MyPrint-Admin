@@ -7,20 +7,16 @@ import {
   Copy, 
   FileSpreadsheet, 
   Download, 
-  AlertTriangle, 
-  CheckCircle2,
   Sparkles
 } from 'lucide-react';
 import { exportPlayersToCsv } from '../../utils/csvHelper';
 import { useMasterData } from '../../hooks/useMasterData';
-import { groupRosterPlayers, getRosterSizeTotals, getRosterTotalQuantity } from '../../utils/rosterGrouping';
 import { RosterSizeSummary } from './RosterSizeSummary';
+import { getOrderTotalQuantity } from '../../utils/orderSizing';
 
 interface PlayerTableProps {
   players: PlayerDetail[];
   onChange: (players: PlayerDetail[]) => void;
-  targetTotalQty: number;
-  onSyncTotalQty: (computedQty: number) => void;
   defaultSleeve: string;
   onOpenImportCsv: () => void;
   orderNumber: string;
@@ -30,8 +26,6 @@ interface PlayerTableProps {
 export const PlayerTable: React.FC<PlayerTableProps> = ({
   players,
   onChange,
-  targetTotalQty,
-  onSyncTotalQty,
   defaultSleeve,
   onOpenImportCsv,
   orderNumber,
@@ -41,10 +35,7 @@ export const PlayerTable: React.FC<PlayerTableProps> = ({
   const masterData = useMasterData();
 
   // Compute total Qty across rows
-  const computedTotalQty = getRosterTotalQuantity(players);
-  const isQtyMatch = computedTotalQty === targetTotalQty;
-  const groupedPlayers = groupRosterPlayers(players);
-  const sizeRecap = getRosterSizeTotals(players);
+  const computedTotalQty = getOrderTotalQuantity('roster', players);
 
   const handleAddRow = (initialData?: Partial<PlayerDetail>) => {
     const newPlayer: PlayerDetail = {
@@ -67,12 +58,13 @@ export const PlayerTable: React.FC<PlayerTableProps> = ({
     }, 50);
   };
 
-  const handleUpdateRow = (id: string, field: keyof PlayerDetail, value: any) => {
+  const handleUpdateRow = (id: string, field: 'name' | 'number' | 'size' | 'sleeve' | 'notes', value: string | undefined) => {
     const updated = players.map(p => {
       if (p.id === id) {
         return {
           ...p,
-          [field]: field === 'quantity' ? Math.max(1, parseInt(value) || 1) : value,
+          [field]: value,
+          quantity: 1,
         };
       }
       return p;
@@ -81,11 +73,6 @@ export const PlayerTable: React.FC<PlayerTableProps> = ({
   };
 
   const handleDeleteRow = (id: string) => {
-    if (players.length <= 1) {
-      // Clear instead of removing last row
-      onChange([{ id: `p-${Date.now()}`, name: '', number: '', size: 'L', quantity: 1, notes: '' }]);
-      return;
-    }
     onChange(players.filter(p => p.id !== id));
   };
 
@@ -106,8 +93,7 @@ export const PlayerTable: React.FC<PlayerTableProps> = ({
   // Name [Enter] -> Number [Enter] -> Size [Enter] -> New Row created and focused!
   const handleKeyDown = (
     e: React.KeyboardEvent<HTMLInputElement | HTMLSelectElement>,
-    rowId: string,
-    field: 'name' | 'number' | 'size' | 'quantity'
+    field: 'name' | 'number' | 'size'
   ) => {
     if (e.key === 'Enter') {
       e.preventDefault();
@@ -122,11 +108,6 @@ export const PlayerTable: React.FC<PlayerTableProps> = ({
         const nextInput = currentRow.querySelector<HTMLInputElement | HTMLSelectElement>('[data-field="size"]');
         nextInput?.focus();
       } else if (field === 'size') {
-        const nextInput = currentRow.querySelector<HTMLInputElement>('input[data-field="quantity"]');
-        nextInput?.focus();
-        nextInput?.select();
-      } else if (field === 'quantity') {
-        // Create new row!
         handleAddRow();
       }
     }
@@ -207,7 +188,6 @@ export const PlayerTable: React.FC<PlayerTableProps> = ({
               <th className="py-2.5 px-3 min-w-[160px]">Nama Pemain / Punggung</th>
               <th className="py-2.5 px-3 w-28 text-center">No Punggung</th>
               <th className="py-2.5 px-3 w-28 text-center">Ukuran</th>
-              <th className="py-2.5 px-3 w-20 text-center">Qty</th>
               <th className="py-2.5 px-3 w-32 text-center">Jenis Lengan</th>
               <th className="py-2.5 px-3 min-w-[140px]">Catatan Khusus</th>
               <th className="py-2.5 px-3 w-20 text-center">Aksi</th>
@@ -216,21 +196,13 @@ export const PlayerTable: React.FC<PlayerTableProps> = ({
           <tbody className="divide-y divide-neutral-200/60 bg-white">
             {players.length === 0 ? (
               <tr>
-                <td colSpan={8} className="py-8 text-center text-neutral-400 text-xs">
+                <td colSpan={7} className="py-8 text-center text-neutral-400 text-xs">
                   Belum ada data pemain. Klik <strong>+ Tambah Baris</strong> atau <strong>Import CSV</strong> untuk menambahkan.
                 </td>
               </tr>
             ) : (
-              groupedPlayers.map(({ player, group }, index) => (
-                <React.Fragment key={player.id}>
-                {(index === 0 || groupedPlayers[index - 1].group !== group) && (
-                  <tr className="bg-neutral-50 text-neutral-700">
-                    <td colSpan={8} className="border-y border-neutral-200 px-3 py-2 text-xs font-bold">
-                      Kelompok {group} — {sizeRecap[group] || 0} pcs
-                    </td>
-                  </tr>
-                )}
-                <tr className="group transition-colors hover:bg-neutral-50/70">
+              players.map((player, index) => (
+                <tr key={player.id} className="group transition-colors hover:bg-neutral-50/70">
                   {/* Row Number */}
                   <td className="py-2 px-3 text-center text-neutral-400 font-mono text-[11px] font-semibold">
                     {index + 1}
@@ -243,7 +215,7 @@ export const PlayerTable: React.FC<PlayerTableProps> = ({
                       data-field="name"
                       value={player.name}
                       onChange={e => handleUpdateRow(player.id, 'name', e.target.value.toUpperCase())}
-                      onKeyDown={e => handleKeyDown(e, player.id, 'name')}
+                      onKeyDown={e => handleKeyDown(e, 'name')}
                       placeholder="CONTOH: BUDI SANTOSO"
                       className="w-full px-2.5 py-1.5 rounded-lg border border-transparent hover:border-neutral-200 focus:border-[#D71920] focus:bg-white outline-none font-semibold text-neutral-900 transition-all uppercase placeholder:font-normal placeholder:text-neutral-300"
                     />
@@ -256,7 +228,7 @@ export const PlayerTable: React.FC<PlayerTableProps> = ({
                       data-field="number"
                       value={player.number}
                       onChange={e => handleUpdateRow(player.id, 'number', e.target.value)}
-                      onKeyDown={e => handleKeyDown(e, player.id, 'number')}
+                      onKeyDown={e => handleKeyDown(e, 'number')}
                       placeholder="10 / -"
                       className="w-full text-center px-2 py-1.5 rounded-lg border border-transparent hover:border-neutral-200 focus:border-[#D71920] focus:bg-white outline-none font-mono font-bold text-neutral-900 transition-all placeholder:text-neutral-300"
                     />
@@ -269,7 +241,7 @@ export const PlayerTable: React.FC<PlayerTableProps> = ({
                         data-field="size"
                         value={player.size}
                         onChange={e => handleUpdateRow(player.id, 'size', e.target.value)}
-                        onKeyDown={e => handleKeyDown(e, player.id, 'size')}
+                        onKeyDown={e => handleKeyDown(e, 'size')}
                         className="w-full text-center px-2 py-1.5 rounded-lg border border-transparent hover:border-neutral-200 focus:border-[#D71920] focus:bg-white outline-none font-bold text-neutral-900 transition-all cursor-pointer"
                       >
                         {masterData.options('jersey_sizes', player.size, preserveLegacySizes).map(size => (
@@ -277,19 +249,6 @@ export const PlayerTable: React.FC<PlayerTableProps> = ({
                         ))}
                       </select>
                     </div>
-                  </td>
-
-                  {/* Qty Input */}
-                  <td className="py-1.5 px-3">
-                    <input
-                      type="number"
-                      min="1"
-                      data-field="quantity"
-                      value={player.quantity}
-                      onChange={e => handleUpdateRow(player.id, 'quantity', e.target.value)}
-                      onKeyDown={e => handleKeyDown(e, player.id, 'quantity')}
-                      className="w-full text-center px-2 py-1.5 rounded-lg border border-transparent hover:border-neutral-200 focus:border-[#D71920] focus:bg-white outline-none font-mono font-bold text-neutral-900 transition-all"
-                    />
                   </td>
 
                   <td className="py-1.5 px-3">
@@ -350,7 +309,6 @@ export const PlayerTable: React.FC<PlayerTableProps> = ({
                     </div>
                   </td>
                 </tr>
-                </React.Fragment>
               ))
             )}
           </tbody>
@@ -359,44 +317,17 @@ export const PlayerTable: React.FC<PlayerTableProps> = ({
 
       <RosterSizeSummary players={players} />
 
-      {/* Bottom Table Verification & Synchronizer */}
+      {/* Automatically calculated roster total */}
       <div className="mt-4 pt-3 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 bg-neutral-50/70 p-3.5 rounded-xl border border-neutral-200/70">
         <div className="flex items-center gap-4 text-xs">
           <div>
             <span className="text-neutral-500">Total Baris:</span>{' '}
-            <strong className="font-mono text-neutral-900">{players.length} item</strong>
+            <strong className="font-mono text-neutral-900">{computedTotalQty} data valid</strong>
           </div>
           <div>
-            <span className="text-neutral-500">Total Qty Tabel:</span>{' '}
+            <span className="text-neutral-500">Total PCS:</span>{' '}
             <strong className="font-mono text-neutral-900 font-bold">{computedTotalQty} pcs</strong>
           </div>
-        </div>
-
-        {/* Validation indicator */}
-        <div className="flex items-center gap-3">
-          {isQtyMatch ? (
-            <div className="flex items-center gap-1.5 text-xs font-semibold text-emerald-700 bg-emerald-50 px-3 py-1.5 rounded-lg border border-emerald-200">
-              <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-              <span>Jumlah data sudah sesuai ({computedTotalQty} pcs)</span>
-            </div>
-          ) : (
-            <div className="flex items-center gap-2">
-              <div className="flex items-center gap-1.5 text-xs font-semibold text-amber-800 bg-amber-50 px-3 py-1.5 rounded-lg border border-amber-200">
-                <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
-                <span>
-                  Total order ({targetTotalQty} pcs) belum sesuai tabel ({computedTotalQty} pcs)
-                </span>
-              </div>
-              <button
-                type="button"
-                onClick={() => onSyncTotalQty(computedTotalQty)}
-                className="px-2.5 py-1.5 text-xs font-semibold text-neutral-800 bg-white border border-neutral-300 hover:bg-neutral-100 rounded-lg shadow-2xs transition-colors whitespace-nowrap"
-                title="Update Total Order menjadi jumlah tabel"
-              >
-                Sinkronkan ke Total
-              </button>
-            </div>
-          )}
         </div>
       </div>
     </div>

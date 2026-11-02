@@ -28,6 +28,61 @@ import { isSupabaseConfigured } from "./services/supabase/client";
 
 type ViewMode = NavItemKey | "order-detail";
 
+async function waitForPrintDocument(): Promise<void> {
+  const timeoutAt = Date.now() + 10000;
+  let printDocument: HTMLElement | null = null;
+
+  while (Date.now() < timeoutAt) {
+    printDocument = document.querySelector<HTMLElement>(
+      '#print-root [data-pagination-ready="true"]',
+    );
+    if (printDocument) break;
+    await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+  }
+
+  if (!printDocument) {
+    throw new Error("Dokumen cetak belum siap. Silakan coba kembali.");
+  }
+
+  await document.fonts.ready;
+  await Promise.all(
+    Array.from(printDocument.querySelectorAll("img")).map(async image => {
+      if (!image.complete) {
+        await new Promise<void>((resolve, reject) => {
+          const timeout = window.setTimeout(() => {
+            cleanup();
+            reject(new Error(`Gambar ${image.alt || "Form Order"} gagal dimuat sebelum dicetak.`));
+          }, 10000);
+          const cleanup = () => {
+            window.clearTimeout(timeout);
+            image.removeEventListener("load", onLoad);
+            image.removeEventListener("error", onError);
+          };
+          const onLoad = () => {
+            cleanup();
+            resolve();
+          };
+          const onError = () => {
+            cleanup();
+            reject(new Error(`Gambar ${image.alt || "Form Order"} gagal dimuat sebelum dicetak.`));
+          };
+          image.addEventListener("load", onLoad, { once: true });
+          image.addEventListener("error", onError, { once: true });
+          if (image.complete) {
+            if (image.naturalWidth > 0) onLoad();
+            else onError();
+          }
+        });
+      }
+
+      if (image.naturalWidth <= 0) {
+        throw new Error(`Gambar ${image.alt || "Form Order"} gagal dimuat sebelum dicetak.`);
+      }
+      await image.decode();
+    }),
+  );
+}
+
 export default function App() {
   const auth = useSupabaseAuth();
   const initialOrders = isSupabaseConfigured() ? [] : storageService.getOrders();
@@ -53,6 +108,7 @@ export default function App() {
   // Global Quick Action Modals
   const [isQuickOrderModalOpen, setIsQuickOrderModalOpen] = useState(false);
   const [isWhatsAppModalOpen, setIsWhatsAppModalOpen] = useState(false);
+  const [pendingWhatsAppData, setPendingWhatsAppData] = useState<WhatsAppParseResult | null>(null);
 
   // Global Keyboard Shortcuts
   useEffect(() => {
@@ -178,19 +234,31 @@ export default function App() {
   };
 
   const handleExecutePrint = async () => {
-    if (printingOrder?.collar?.imageUrl) {
-      await supabaseStorageService.preloadImage(printingOrder.collar.imageUrl);
+    if (!printingOrder) {
+      showToast("error", "Pilih order terlebih dahulu sebelum mencetak.", "Dokumen Cetak Tidak Tersedia");
+      return;
     }
-    if (printingOrder?.designs && printingOrder.designs.length > 0) {
-      await Promise.all(
-        printingOrder.designs.map((d) =>
-          supabaseStorageService.preloadImage(d.dataUrl),
-        ),
+
+    try {
+      if (printingOrder.collar?.imageUrl) {
+        await supabaseStorageService.preloadImage(printingOrder.collar.imageUrl);
+      }
+      if (printingOrder.designs?.length) {
+        await Promise.all(
+          printingOrder.designs.map((design) =>
+            supabaseStorageService.preloadImage(design.dataUrl),
+          ),
+        );
+      }
+      await waitForPrintDocument();
+      window.print();
+    } catch (error) {
+      showToast(
+        "error",
+        error instanceof Error ? error.message : "Gagal menyiapkan dokumen untuk dicetak.",
+        "Gagal Mencetak Form Order",
       );
     }
-    setTimeout(() => {
-      window.print();
-    }, 150);
   };
 
   const handleDownloadOrderPdf = async (order: Order) => {
@@ -249,6 +317,7 @@ export default function App() {
   // WhatsApp parsing handler from Global Modal
   const handleApplyWhatsAppGlobal = (parsed: WhatsAppParseResult) => {
     setIsWhatsAppModalOpen(false);
+    setPendingWhatsAppData(parsed);
     setCurrentView("quick-order");
     showToast(
       "info",
@@ -336,8 +405,7 @@ export default function App() {
 
   const { title, subtitle } = getPageInfo();
   const selectedOrder = orders.find((o) => o.id === selectedOrderId);
-  const activePrintTarget =
-    printingOrder || selectedOrder || (orders.length > 0 ? orders[0] : null);
+  const activePrintTarget = printingOrder;
 
   if (isSupabaseConfigured() && auth.isLoading) {
     return <main className="flex min-h-screen items-center justify-center bg-[#F8F9FA] text-sm font-semibold text-neutral-600">Memulihkan sesi Supabase...</main>;
@@ -439,6 +507,8 @@ export default function App() {
           <QuickOrder
             onOrderCreated={handleOrderCreated}
             onCancel={() => setCurrentView("dashboard")}
+            initialWhatsAppData={pendingWhatsAppData}
+            onInitialWhatsAppDataApplied={() => setPendingWhatsAppData(null)}
           />
         )}
 

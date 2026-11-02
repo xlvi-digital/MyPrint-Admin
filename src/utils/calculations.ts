@@ -1,4 +1,5 @@
 import { Order, SizeRecapItem, STANDARD_SIZES } from '../types/order';
+import { getOrderSizeRecap, getOrderTotalQuantity } from './orderSizing';
 
 /**
  * Calculates aggregate size recap across a list of orders (or a single order)
@@ -7,34 +8,15 @@ export function calculateSizeRecap(orders: Order[], configuredSizes: string[] = 
   recap: SizeRecapItem[];
   totalQty: number;
 } {
-  const sizeMap: Record<string, number> = {};
+  const sizeMap = new Map<string, number>();
+  const totalQty = orders.reduce((total, order) => {
+    getOrderSizeRecap(order.inputMode, order.players || []).forEach(item => {
+      sizeMap.set(item.size, (sizeMap.get(item.size) || 0) + item.quantity);
+    });
+    return total + getOrderTotalQuantity(order.inputMode, order.players || []);
+  }, 0);
 
-  // Initialize standard sizes
-  STANDARD_SIZES.filter(s => s !== 'Custom').forEach(s => {
-    sizeMap[s] = 0;
-  });
-
-  let totalQty = 0;
-
-  for (const order of orders) {
-    if (order.players && order.players.length > 0) {
-      for (const player of order.players) {
-        const size = (player.size || 'L').toUpperCase();
-        const qty = Number(player.quantity) || 1;
-        sizeMap[size] = (sizeMap[size] || 0) + qty;
-        totalQty += qty;
-      }
-    } else {
-      // If no player detail table, bucket under 'ALL SIZE' or standard 'L'
-      const orderQty = order.product?.totalQuantity || 0;
-      sizeMap['L'] = (sizeMap['L'] || 0) + orderQty;
-      totalQty += orderQty;
-    }
-  }
-
-  // Format into ordered list
-  const recap: SizeRecapItem[] = Object.entries(sizeMap)
-    .filter(([_, qty]) => qty > 0)
+  const recap: SizeRecapItem[] = [...sizeMap.entries()]
     .map(([size, quantity]) => ({ size, quantity }))
     .sort((a, b) => {
       const idxA = configuredSizes.indexOf(a.size);
@@ -66,19 +48,6 @@ export function getOrderCompleteness(order: Order): {
   }
   if (!order.product.totalQuantity || order.product.totalQuantity <= 0) {
     issues.push('Jumlah pesanan masih kosong');
-  }
-
-  // Check player count vs total order
-  if (order.players && order.players.length > 0) {
-    const tableTotal = order.players.reduce((sum, p) => sum + (Number(p.quantity) || 0), 0);
-    if (tableTotal !== order.product.totalQuantity) {
-      const diff = order.product.totalQuantity - tableTotal;
-      issues.push(
-        diff > 0
-          ? `Data ukuran kurang ${diff} pcs dari total order`
-          : `Data ukuran berlebih ${Math.abs(diff)} pcs dari total order`
-      );
-    }
   }
 
   if (!order.designs || order.designs.length === 0) {

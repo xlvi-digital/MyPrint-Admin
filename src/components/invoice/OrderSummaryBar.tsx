@@ -5,11 +5,10 @@ import {
   Printer, 
   Eye, 
   Trash2, 
-  AlertTriangle, 
-  CheckCircle2, 
   FileDown 
 } from 'lucide-react';
 import { formatRupiah } from '../../utils/formatters';
+import { getOrderTotalQuantity } from '../../utils/orderSizing';
 
 interface OrderSummaryBarProps {
   order: Order;
@@ -31,8 +30,7 @@ export const OrderSummaryBar: React.FC<OrderSummaryBarProps> = ({
   isSaving = false,
 }) => {
   const { customer, product, players } = order;
-  const computedTableQty = players.reduce((sum, p) => sum + (Number(p.quantity) || 0), 0);
-  const isQtyMatch = (product.totalQuantity || 0) === computedTableQty;
+  const computedTableQty = getOrderTotalQuantity(order.inputMode, players);
 
   return (
     <div className="sticky bottom-0 z-20 bg-white/95 backdrop-blur-md border-t border-neutral-200/90 shadow-lg p-3 sm:p-4 no-print">
@@ -41,10 +39,10 @@ export const OrderSummaryBar: React.FC<OrderSummaryBarProps> = ({
         <div className="flex items-center gap-4 text-xs flex-wrap">
           <div>
             <span className="text-neutral-400 block text-[10px] font-semibold uppercase">
-              Pemesan / Tim
+              Pemesan
             </span>
             <span className="font-bold text-neutral-900 truncate max-w-[140px] block">
-              {customer.name || 'Belum diisi'} {customer.teamName ? `(${customer.teamName})` : ''}
+              {customer.name || 'Belum diisi'}
             </span>
           </div>
 
@@ -65,16 +63,9 @@ export const OrderSummaryBar: React.FC<OrderSummaryBarProps> = ({
               <span className="font-mono font-bold text-neutral-900">
                 {product.totalQuantity || 0} pcs
               </span>
-              {isQtyMatch ? (
-                <span className="text-[10px] text-emerald-700 bg-emerald-50 px-1.5 py-0.2 rounded font-semibold border border-emerald-200">
-                  Tabel: {computedTableQty} pcs ✓
-                </span>
-              ) : (
-                <span className="text-[10px] text-amber-700 bg-amber-50 px-1.5 py-0.2 rounded font-semibold border border-amber-200 flex items-center gap-0.5">
-                  <AlertTriangle className="w-2.5 h-2.5" />
-                  Tabel: {computedTableQty} pcs
-                </span>
-              )}
+              <span className="text-[10px] text-emerald-700 bg-emerald-50 px-1.5 py-0.2 rounded font-semibold border border-emerald-200">
+                Data valid: {computedTableQty} pcs
+              </span>
             </div>
           </div>
 

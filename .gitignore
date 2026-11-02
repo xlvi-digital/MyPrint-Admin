@@ -11,3 +11,6 @@ supabase/
 supabase/*
 !supabase/migration_order_channels_and_master_data.sql
 !supabase/migration_secure_master_and_order_designs.sql
+!supabase/migration_add_child_jersey_sizes.sql
+!supabase/migration_offline_order_numbers.sql
+!supabase/migration_order_optional_feature_flags.sql

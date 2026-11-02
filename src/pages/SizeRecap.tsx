@@ -133,7 +133,7 @@ export const SizeRecap: React.FC<SizeRecapProps> = ({
             <thead className="bg-neutral-100 text-neutral-700 font-bold border-b border-neutral-200">
               <tr>
                 <th className="py-2.5 px-3">No. Order</th>
-                <th className="py-2.5 px-3">Pemesan & Tim</th>
+                <th className="py-2.5 px-3">Pemesan</th>
                 <th className="py-2.5 px-3">Bahan</th>
                 <th className="py-2.5 px-3 text-center">Total</th>
                 <th className="py-2.5 px-3">Rincian Ukuran Terbanyak</th>
@@ -154,9 +154,6 @@ export const SizeRecap: React.FC<SizeRecapProps> = ({
                     </td>
                     <td className="py-3 px-3">
                       <div className="font-bold text-neutral-900">{order.customer.name}</div>
-                      {order.customer.teamName && (
-                        <div className="text-[10px] text-neutral-400">{order.customer.teamName}</div>
-                      )}
                     </td>
                     <td className="py-3 px-3 font-semibold text-neutral-800">
                       {order.product.material}

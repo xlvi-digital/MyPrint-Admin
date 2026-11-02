@@ -16,6 +16,7 @@ import { generateUuid } from '../utils/uuid';
 import { CustomerForm } from '../components/invoice/CustomerForm';
 import { ProductForm } from '../components/invoice/ProductForm';
 import { PlayerTable } from '../components/invoice/PlayerTable';
+import { SizeQuantityTable } from '../components/invoice/SizeQuantityTable';
 import { DesignUploader } from '../components/invoice/DesignUploader';
 import { PrintingTable } from '../components/invoice/PrintingTable';
 import { CollarForm } from '../components/invoice/CollarForm';
@@ -26,6 +27,7 @@ import { ImportCsvModal } from '../components/invoice/ImportCsvModal';
 import { ConfirmModal } from '../components/common/ConfirmModal';
 import { SalesOrderFields } from '../components/order/SalesOrderFields';
 import { useMasterData } from '../hooks/useMasterData';
+import { getOrderTotalQuantity, isValidRosterPlayer, isValidSizeQuantity, resolveOrderInputMode } from '../utils/orderSizing';
 import { 
   CheckCircle2, 
   HelpCircle, 
@@ -72,13 +74,13 @@ export const CreateInvoice: React.FC<CreateInvoiceProps> = ({
     return {
       id: generateUuid(),
       orderNumber: newOrderNum,
+      inputMode: 'roster',
       salesChannel: 'Offline',
       externalOrderNumber: '',
       customer: {
         name: '',
         phone: '',
         email: '',
-        teamName: '',
         address: '',
         orderDate: today,
         deadlineDate: '',
@@ -91,16 +93,13 @@ export const CreateInvoice: React.FC<CreateInvoiceProps> = ({
         model: 'Reguler Fit',
         sleeve: 'Pendek',
         rib: 'Tidak Pakai Rib',
-        totalQuantity: 20,
+        totalQuantity: 0,
         unitPrice: 110000,
-        totalPrice: 2200000,
+        totalPrice: 0,
         downPayment: 1000000,
-        remainingPayment: 1200000,
+        remainingPayment: 0,
       },
-      players: [
-        { id: 'p-1', name: '', number: '', size: 'M', quantity: 1, notes: '' },
-        { id: 'p-2', name: '', number: '', size: 'L', quantity: 1, notes: '' },
-      ],
+      players: [],
       useTableThreshold: 5,
       printingMachines: [
         { id: 'm-1', name: 'MESIN EPSON F7270' },
@@ -110,6 +109,11 @@ export const CreateInvoice: React.FC<CreateInvoiceProps> = ({
         { id: 'm-5', name: 'MESIN EPSON F7270' },
       ],
       designs: [],
+      features: {
+        designs: false,
+        collarRib: true,
+        notes: true,
+      },
       collar: {
         modelName: 'POLO KANCING 2',
       },
@@ -128,9 +132,29 @@ export const CreateInvoice: React.FC<CreateInvoiceProps> = ({
   };
 
   const [order, setOrder] = useState<Order>(() => {
-    if (initialOrder) return initialOrder;
+    if (initialOrder) {
+      const inputMode = resolveOrderInputMode(initialOrder.inputMode, initialOrder.players);
+      return { ...initialOrder, inputMode };
+    }
     return createDefaultOrder();
   });
+
+  useEffect(() => {
+    setOrder(prev => {
+      const totalQuantity = getOrderTotalQuantity(prev.inputMode, prev.players);
+      const totalPrice = totalQuantity * (prev.product.unitPrice || 0);
+      const remainingPayment = Math.max(0, totalPrice - (prev.product.downPayment || 0));
+      if (
+        prev.product.totalQuantity === totalQuantity
+        && prev.product.totalPrice === totalPrice
+        && prev.product.remainingPayment === remainingPayment
+      ) return prev;
+      return {
+        ...prev,
+        product: { ...prev.product, totalQuantity, totalPrice, remainingPayment },
+      };
+    });
+  }, [order.inputMode, order.players, order.product.unitPrice, order.product.downPayment]);
 
   // Check draft on mount if not editing existing order
   useEffect(() => {
@@ -166,23 +190,6 @@ export const CreateInvoice: React.FC<CreateInvoiceProps> = ({
     setDraftAlertOpen(false);
   };
 
-  // Sync Total Qty from Player Table
-  const handleSyncTotalQty = (computedQty: number) => {
-    const newQty = Math.max(1, computedQty);
-    const totalPrice = newQty * (order.product.unitPrice || 0);
-    const remainingPayment = Math.max(0, totalPrice - (order.product.downPayment || 0));
-
-    setOrder(prev => ({
-      ...prev,
-      product: {
-        ...prev.product,
-        totalQuantity: newQty,
-        totalPrice,
-        remainingPayment,
-      },
-    }));
-  };
-
   // Validate Form before opening Confirmation Modal
   const validateForm = (): boolean => {
     const errors: Record<string, string> = {};
@@ -193,7 +200,7 @@ export const CreateInvoice: React.FC<CreateInvoiceProps> = ({
     if (!order.customer.phone.trim()) {
       errors.phone = 'Nomor telepon/WA wajib diisi';
     }
-    if (!order.externalOrderNumber?.trim()) {
+    if (order.salesChannel !== 'Offline' && !order.externalOrderNumber?.trim()) {
       errors.externalOrderNumber = 'Nomor pesanan wajib diisi';
     }
     if (!order.product.material.trim()) {
@@ -209,14 +216,17 @@ export const CreateInvoice: React.FC<CreateInvoiceProps> = ({
         if (!masterData.data.materials.some(item => item.isActive && item.name === order.product.material)) {
           errors.material = 'Pilih jenis bahan aktif dari Data Master.';
         }
-        if (order.players.some(player => !masterData.data.jersey_sizes.some(
+        const validRows = order.inputMode === 'size-quantity'
+          ? order.players.filter(isValidSizeQuantity)
+          : order.players.filter(isValidRosterPlayer);
+        if (validRows.some(player => !masterData.data.jersey_sizes.some(
           size => size.isActive && (size.code === player.size || size.name === player.size),
         ))) {
-          errors.playerSizes = 'Roster berisi ukuran nonaktif atau belum terdaftar. Perbarui data ukuran sebelum menyimpan order baru.';
+          errors.playerSizes = 'Data berisi ukuran nonaktif atau belum terdaftar. Perbarui data ukuran sebelum menyimpan order baru.';
         }
       }
     }
-    if (!order.product.totalQuantity || order.product.totalQuantity <= 0) {
+    if (!getOrderTotalQuantity(order.inputMode, order.players)) {
       errors.totalQuantity = 'Jumlah total pesanan minimal 1 pcs';
     }
 
@@ -243,6 +253,15 @@ export const CreateInvoice: React.FC<CreateInvoiceProps> = ({
     if (isSaving) return;
     const finalOrder: Order = {
       ...order,
+      product: {
+        ...order.product,
+        totalQuantity: getOrderTotalQuantity(order.inputMode, order.players),
+        totalPrice: getOrderTotalQuantity(order.inputMode, order.players) * (order.product.unitPrice || 0),
+        remainingPayment: Math.max(
+          0,
+          getOrderTotalQuantity(order.inputMode, order.players) * (order.product.unitPrice || 0) - (order.product.downPayment || 0),
+        ),
+      },
       customer: {
         ...order.customer,
         orderNumber: order.orderNumber, // keep in sync
@@ -265,17 +284,11 @@ export const CreateInvoice: React.FC<CreateInvoiceProps> = ({
   // CSV Import handler
   const handleImportCsvData = (imported: PlayerDetail[], mode: 'replace' | 'append') => {
     const updatedPlayers = mode === 'replace' ? imported : [...order.players, ...imported];
-    const totalTableQty = updatedPlayers.reduce((sum, p) => sum + (Number(p.quantity) || 0), 0);
 
     setOrder(prev => ({
       ...prev,
+      inputMode: 'roster',
       players: updatedPlayers,
-      product: {
-        ...prev.product,
-        totalQuantity: totalTableQty > 0 ? totalTableQty : prev.product.totalQuantity,
-        totalPrice: totalTableQty * prev.product.unitPrice,
-        remainingPayment: Math.max(0, totalTableQty * prev.product.unitPrice - prev.product.downPayment),
-      },
     }));
   };
 
@@ -288,7 +301,10 @@ export const CreateInvoice: React.FC<CreateInvoiceProps> = ({
     { num: 6, title: 'Keterangan' },
   ];
 
-  const totalTableQty = order.players.reduce((sum, p) => sum + (Number(p.quantity) || 0), 0);
+  const totalTableQty = getOrderTotalQuantity(order.inputMode, order.players);
+  const validTableRows = order.inputMode === 'size-quantity'
+    ? order.players.filter(isValidSizeQuantity).length
+    : order.players.filter(isValidRosterPlayer).length;
 
   return (
     <div className="max-w-[1600px] mx-auto pb-24">
@@ -346,7 +362,7 @@ export const CreateInvoice: React.FC<CreateInvoiceProps> = ({
         {showHelperBanner && (
           <div className="mt-4 pt-4 border-t border-neutral-100 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
             {[
-              { step: 'Step 1', title: 'Data Pemesan', desc: 'Isi nama tim, kontak WA & nomor order.' },
+              { step: 'Step 1', title: 'Data Pemesan', desc: 'Isi nama pemesan, kontak WA & nomor order.' },
               { step: 'Step 2', title: 'Detail Bahan', desc: 'Pilih kain (Milano, Drifit) & harga.' },
               { step: 'Step 3', title: 'Upload Desain', desc: 'Unggah file visual mock-up jersey.' },
               { step: 'Step 4', title: 'Data Ukuran', desc: 'Ketik nama, no punggung, ukuran pemain.' },
@@ -415,6 +431,7 @@ export const CreateInvoice: React.FC<CreateInvoiceProps> = ({
             <div className="mt-4 rounded-2xl border border-neutral-200 bg-white p-5 sm:p-6">
               <SalesOrderFields
                 salesChannel={order.salesChannel}
+                orderNumber={order.orderNumber}
                 externalOrderNumber={order.externalOrderNumber}
                 onChange={(salesChannel, externalOrderNumber) => setOrder(prev => ({
                   ...prev,
@@ -435,7 +452,14 @@ export const CreateInvoice: React.FC<CreateInvoiceProps> = ({
           <div id="step-2">
             <ProductForm
               product={order.product}
-              onChange={newProd => setOrder(prev => ({ ...prev, product: newProd }))}
+              onChange={newProd => setOrder(prev => ({
+                ...prev,
+                product: newProd,
+                features: {
+                  ...prev.features,
+                  collarRib: prev.features?.collarRib || newProd.rib !== 'Tidak Pakai Rib',
+                },
+              }))}
               errors={validationErrors as any}
               preserveLegacyValues={Boolean(initialOrder)}
             />
@@ -446,26 +470,62 @@ export const CreateInvoice: React.FC<CreateInvoiceProps> = ({
             <DesignUploader
               orderId={order.id}
               designs={order.designs}
-              onChange={newDesigns => setOrder(prev => ({ ...prev, designs: newDesigns }))}
+              onChange={newDesigns => setOrder(prev => ({
+                ...prev,
+                designs: newDesigns,
+                features: { ...prev.features, designs: newDesigns.length > 0 },
+              }))}
               materialName={order.product.material}
             />
           </div>
 
           {/* Section 4: Data Pemain & Detail Ukuran */}
           <div id="step-4">
+            <section className="mb-4 rounded-2xl border border-neutral-200 bg-white p-5 shadow-xs sm:p-6">
+              <h2 className="mb-3 text-sm font-bold text-neutral-900">Metode Input Data Order</h2>
+              <div className="grid gap-3 sm:grid-cols-2">
+                {([
+                  ['roster', 'Dengan nama & nomor punggung', 'Satu baris untuk setiap jersey pemain.'],
+                  ['size-quantity', 'Tanpa nama & nomor punggung', 'Masukkan jumlah PCS untuk tiap ukuran.'],
+                ] as const).map(([mode, label, description]) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => setOrder(prev => ({ ...prev, inputMode: mode }))}
+                    aria-pressed={order.inputMode === mode}
+                    className={`rounded-xl border p-3 text-left transition-colors ${order.inputMode === mode ? 'border-[#D71920] bg-red-50' : 'border-neutral-200 hover:bg-neutral-50'}`}
+                  >
+                    <span className="block text-xs font-bold text-neutral-900">{label}</span>
+                    <span className="mt-1 block text-[11px] text-neutral-500">{description}</span>
+                  </button>
+                ))}
+              </div>
+              <div className="mt-3 text-xs font-bold text-[#D71920]" aria-live="polite">
+                TOTAL PCS OTOMATIS: {order.product.totalQuantity} PCS
+              </div>
+            </section>
             {validationErrors.playerSizes && (
               <p className="mb-2 rounded-xl border border-red-200 bg-red-50 p-3 text-xs text-red-700">{validationErrors.playerSizes}</p>
             )}
-            <PlayerTable
-              players={order.players}
-              onChange={newPlayers => setOrder(prev => ({ ...prev, players: newPlayers }))}
-              targetTotalQty={order.product.totalQuantity}
-              onSyncTotalQty={handleSyncTotalQty}
-              defaultSleeve={order.product.sleeve}
-              onOpenImportCsv={() => setIsCsvModalOpen(true)}
-              orderNumber={order.orderNumber}
-              preserveLegacySizes={Boolean(initialOrder)}
-            />
+            {validationErrors.totalQuantity && (
+              <p className="mb-2 rounded-xl border border-red-200 bg-red-50 p-3 text-xs text-red-700">{validationErrors.totalQuantity}</p>
+            )}
+            {order.inputMode === 'size-quantity' ? (
+              <SizeQuantityTable
+                rows={order.players}
+                onChange={newPlayers => setOrder(prev => ({ ...prev, players: newPlayers }))}
+                preserveLegacySizes={Boolean(initialOrder)}
+              />
+            ) : (
+              <PlayerTable
+                players={order.players}
+                onChange={newPlayers => setOrder(prev => ({ ...prev, players: newPlayers }))}
+                defaultSleeve={order.product.sleeve}
+                onOpenImportCsv={() => setIsCsvModalOpen(true)}
+                orderNumber={order.orderNumber}
+                preserveLegacySizes={Boolean(initialOrder)}
+              />
+            )}
           </div>
 
           {/* Section 5: Printing Machine Allocation */}
@@ -481,7 +541,11 @@ export const CreateInvoice: React.FC<CreateInvoiceProps> = ({
             <CollarForm
               orderId={order.id}
               collar={order.collar}
-              onChange={newCollar => setOrder(prev => ({ ...prev, collar: newCollar }))}
+              onChange={newCollar => setOrder(prev => ({
+                ...prev,
+                collar: newCollar,
+                features: { ...prev.features, collarRib: true },
+              }))}
               preserveLegacyValues={Boolean(initialOrder)}
             />
           </div>
@@ -490,7 +554,11 @@ export const CreateInvoice: React.FC<CreateInvoiceProps> = ({
           <div id="step-7">
             <ProductionNotes
               notes={order.notes}
-              onChangeNotes={n => setOrder(prev => ({ ...prev, notes: n }))}
+              onChangeNotes={n => setOrder(prev => ({
+                ...prev,
+                notes: n,
+                features: { ...prev.features, notes: n.trim().length > 0 },
+              }))}
               signoff={order.signoff}
               onChangeSignoff={s => setOrder(prev => ({ ...prev, signoff: s }))}
             />
@@ -580,20 +648,72 @@ export const CreateInvoice: React.FC<CreateInvoiceProps> = ({
           </div>
 
           <div className="p-3 rounded-xl bg-neutral-50 border border-neutral-200 flex items-center justify-between">
-            <span className="text-neutral-600">Roster Data Ukuran Pemain:</span>
+            <span className="text-neutral-600">{order.inputMode === 'size-quantity' ? 'Baris Rekap Ukuran:' : 'Roster Data Ukuran Pemain:'}</span>
             <strong className="font-mono text-neutral-900">
-              {order.players.length} baris ({totalTableQty} pcs)
+              {validTableRows} baris valid ({totalTableQty} pcs)
             </strong>
           </div>
 
-          {order.product.totalQuantity !== totalTableQty && (
-            <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-800 flex items-start gap-2">
-              <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-              <span>
-                <strong>Catatan:</strong> Total order ({order.product.totalQuantity} pcs) berbeda dengan jumlah tabel pemain ({totalTableQty} pcs). Anda tetap dapat menyimpan invoice ini.
-              </span>
+          <section className="overflow-hidden rounded-xl border border-neutral-200" aria-label="Pengecekan seluruh data order">
+            <div className="flex items-center justify-between gap-2 border-b border-neutral-200 bg-white px-3 py-2">
+              <h3 className="font-bold text-neutral-800">Pengecekan seluruh data input</h3>
+              <span className="text-[10px] text-neutral-500">{order.players.length} baris · urutan input</span>
             </div>
-          )}
+            <div className="max-h-56 overflow-auto">
+              <table className="w-full min-w-[560px] border-collapse text-left text-[11px]">
+                <thead className="sticky top-0 bg-neutral-100 text-neutral-600">
+                  <tr>
+                    <th className="px-2 py-2 text-center">No</th>
+                    {order.inputMode === 'size-quantity' ? (
+                      <>
+                        <th className="px-2 py-2">Ukuran</th>
+                        <th className="px-2 py-2 text-right">Jumlah PCS</th>
+                      </>
+                    ) : (
+                      <>
+                        <th className="px-2 py-2">Nama</th>
+                        <th className="px-2 py-2 text-center">No. Punggung</th>
+                        <th className="px-2 py-2 text-center">Ukuran</th>
+                        <th className="px-2 py-2 text-center">Lengan</th>
+                        <th className="px-2 py-2">Catatan</th>
+                      </>
+                    )}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-neutral-100">
+                  {order.players.map((player, index) => (
+                    <tr key={player.id || index}>
+                      <td className="px-2 py-2 text-center font-mono text-neutral-500">{index + 1}</td>
+                      {order.inputMode === 'size-quantity' ? (
+                        <>
+                          <td className="px-2 py-2 font-bold">{player.size || '-'}</td>
+                          <td className="px-2 py-2 text-right font-mono">{player.quantity || 0}</td>
+                        </>
+                      ) : (
+                        <>
+                          <td className="px-2 py-2 font-semibold">{player.name || '-'}</td>
+                          <td className="px-2 py-2 text-center font-mono">{player.number || '-'}</td>
+                          <td className="px-2 py-2 text-center font-bold">{player.size || '-'}</td>
+                          <td className="px-2 py-2 text-center">{player.sleeve || order.product.sleeve || '-'}</td>
+                          <td className="whitespace-pre-wrap px-2 py-2">{player.notes?.trim() || '-'}</td>
+                        </>
+                      )}
+                    </tr>
+                  ))}
+                  {order.players.length === 0 && (
+                    <tr>
+                      <td
+                        colSpan={order.inputMode === 'size-quantity' ? 3 : 6}
+                        className="px-3 py-4 text-center text-neutral-500"
+                      >
+                        Belum ada baris data input.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </section>
         </div>
       </ConfirmModal>
 

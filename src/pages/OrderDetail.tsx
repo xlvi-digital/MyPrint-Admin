@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { 
   Order, 
   ProductionStatus, 
@@ -40,6 +40,7 @@ import { EditCustomerModal, EditProductModal, EditCollarModal } from '../compone
 import { PlayerFastPasteModal } from '../components/order/PlayerFastPasteModal';
 import { PlayerDetail } from '../types/order';
 import { DesignUploader } from '../components/invoice/DesignUploader';
+import { getOrderSizeRecap, getOrderTotalQuantity, isValidRosterPlayer, resolveOrderInputMode } from '../utils/orderSizing';
 
 interface OrderDetailProps {
   order: Order;
@@ -74,11 +75,27 @@ export const OrderDetail: React.FC<OrderDetailProps> = ({
   const [isEditCollarOpen, setIsEditCollarOpen] = useState(false);
   const [isPasteRosterOpen, setIsPasteRosterOpen] = useState(false);
   const [playerSearch, setPlayerSearch] = useState('');
+  const [selectedSizeFilters, setSelectedSizeFilters] = useState<string[]>([]);
 
   const { customer, product, players, printingMachines, designs, collar, notes, signoff } = order;
+  const inputMode = resolveOrderInputMode(order.inputMode, players);
+  const sizeFilteredPlayers = players.filter(player =>
+    selectedSizeFilters.length === 0 || selectedSizeFilters.includes(player.size.trim().toUpperCase()),
+  );
+  const filteredOrder: Order = {
+    ...order,
+    players: sizeFilteredPlayers,
+    printFilterSizes: selectedSizeFilters.length > 0 ? selectedSizeFilters : undefined,
+    product: {
+      ...product,
+      totalQuantity: players.length
+        ? getOrderTotalQuantity(inputMode, sizeFilteredPlayers)
+        : product.totalQuantity,
+    },
+  };
 
   // Filter players inside roster table
-  const filteredPlayers = players.filter(p => {
+  const filteredPlayers = sizeFilteredPlayers.filter(p => {
     if (!playerSearch) return true;
     const q = playerSearch.toLowerCase();
     return (
@@ -90,7 +107,14 @@ export const OrderDetail: React.FC<OrderDetailProps> = ({
     );
   });
 
-  const totalPlayerQty = players.reduce((sum, p) => sum + (Number(p.quantity) || 0), 0);
+  const totalPlayerQty = players.length ? getOrderTotalQuantity(inputMode, players) : product.totalQuantity;
+  const filteredSizeRecap = getOrderSizeRecap(inputMode, sizeFilteredPlayers);
+  const availableSizes = getOrderSizeRecap(inputMode, players).map(item => item.size);
+
+  useEffect(() => {
+    setSelectedSizeFilters([]);
+    setPlayerSearch('');
+  }, [order.id]);
 
   // WhatsApp quick chat link
   const waNumber = cleanWhatsAppNumber(customer.phone);
@@ -154,7 +178,7 @@ export const OrderDetail: React.FC<OrderDetailProps> = ({
               setIsDownloadingPdf(true);
               try {
                 if (onDownloadPdf) {
-                  await onDownloadPdf(order);
+                  await onDownloadPdf(filteredOrder);
                 }
               } finally {
                 setIsDownloadingPdf(false);
@@ -169,7 +193,7 @@ export const OrderDetail: React.FC<OrderDetailProps> = ({
 
           <button
             type="button"
-            onClick={() => onPrint(order)}
+            onClick={() => onPrint(filteredOrder)}
             className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-neutral-700 bg-neutral-100 hover:bg-neutral-200 rounded-xl transition-colors"
             title="Buka dialog Cetak / Preview Form Order"
           >
@@ -300,11 +324,6 @@ export const OrderDetail: React.FC<OrderDetailProps> = ({
                   <div className="font-bold text-sm text-neutral-900 mt-0.5">
                     {customer.name}
                   </div>
-                  {customer.teamName && (
-                    <div className="text-xs text-neutral-500 font-medium">
-                      Tim: <strong className="text-neutral-800">{customer.teamName}</strong>
-                    </div>
-                  )}
                 </div>
 
                 <div>
@@ -380,7 +399,7 @@ export const OrderDetail: React.FC<OrderDetailProps> = ({
                   <div className="flex items-center justify-between text-xs py-1.5 border-b border-neutral-100">
                     <span className="text-neutral-500">Jumlah Pesanan:</span>
                     <span className="font-mono font-bold text-neutral-900">
-                      {product.totalQuantity} pcs
+                      {totalPlayerQty} pcs
                     </span>
                   </div>
 
@@ -565,75 +584,112 @@ export const OrderDetail: React.FC<OrderDetailProps> = ({
             }}
           />
 
-          {/* Row 4: Player & Size Roster Table */}
+          {/* Row 4: Player roster or quantity-by-size details */}
           <div className="bg-white rounded-3xl border border-neutral-200/80 p-5 sm:p-6 shadow-2xs">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 mb-4 border-b border-neutral-100">
               <div>
                 <h3 className="text-sm font-bold text-neutral-900 tracking-tight flex items-center gap-2">
                   <Users className="w-4 h-4 text-[#D71920]" />
-                  <span>Roster Nama Pemain & Detail Ukuran ({players.length} Data)</span>
+                  <span>{inputMode === 'size-quantity' ? 'Rincian Jumlah per Ukuran' : `Roster Nama Pemain & Detail Ukuran (${players.length} Data)`}</span>
                 </h3>
                 <p className="text-xs text-neutral-400 mt-0.5">
-                  Total kuantitas detail: <strong>{totalPlayerQty} pcs</strong> (Target Order: {product.totalQuantity} pcs)
+                  Total PCS: <strong>{totalPlayerQty} pcs</strong>
                 </p>
               </div>
 
-              <div className="flex items-center gap-2">
-                <input
-                  type="text"
-                  value={playerSearch}
-                  onChange={e => setPlayerSearch(e.target.value)}
-                  placeholder="Cari pemain atau no punggung..."
-                  className="px-3 py-1.5 text-xs bg-neutral-50 border border-neutral-200 rounded-xl outline-none font-medium"
-                />
-                <button
-                  onClick={() => setIsPasteRosterOpen(true)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-neutral-800 bg-neutral-100 hover:bg-neutral-200 rounded-xl transition-colors"
-                >
-                  <span>+ Paste Pemain</span>
-                </button>
-                <button
-                  onClick={() => exportPlayersToCsv(players, order.orderNumber)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-neutral-700 bg-neutral-100 hover:bg-neutral-200 rounded-xl transition-colors"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  <span>Download CSV</span>
-                </button>
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="text-[11px] font-semibold text-neutral-600">
+                  Filter ukuran
+                  <select
+                    multiple
+                    size={Math.min(availableSizes.length || 2, 4)}
+                    value={selectedSizeFilters}
+                    onChange={event => setSelectedSizeFilters(Array.from(event.target.selectedOptions, option => option.value))}
+                    aria-label="Filter ukuran untuk rekap dan dokumen cetak"
+                    className="ml-2 min-w-24 rounded-xl border border-neutral-200 bg-neutral-50 px-2 py-1 text-xs"
+                  >
+                    {availableSizes.map(size => <option key={size} value={size}>{size}</option>)}
+                  </select>
+                </label>
+                {selectedSizeFilters.length > 0 && (
+                  <button type="button" onClick={() => setSelectedSizeFilters([])} className="rounded-xl bg-neutral-100 px-2.5 py-1.5 text-[11px] font-semibold text-neutral-700 hover:bg-neutral-200">
+                    Semua Ukuran
+                  </button>
+                )}
+                {inputMode === 'roster' && (
+                  <>
+                    <input
+                      type="text"
+                      value={playerSearch}
+                      onChange={e => setPlayerSearch(e.target.value)}
+                      placeholder="Cari pemain atau no punggung..."
+                      className="px-3 py-1.5 text-xs bg-neutral-50 border border-neutral-200 rounded-xl outline-none font-medium"
+                    />
+                    <button
+                      onClick={() => setIsPasteRosterOpen(true)}
+                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-neutral-800 bg-neutral-100 hover:bg-neutral-200 rounded-xl transition-colors"
+                    >
+                      <span>+ Paste Pemain</span>
+                    </button>
+                    <button
+                      onClick={() => exportPlayersToCsv(players, order.orderNumber)}
+                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-neutral-700 bg-neutral-100 hover:bg-neutral-200 rounded-xl transition-colors"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span>Download CSV</span>
+                    </button>
+                  </>
+                )}
               </div>
             </div>
 
+            <section className="mb-4 rounded-xl border border-neutral-200 bg-neutral-50 p-3" aria-live="polite">
+              <h4 className="mb-2 text-xs font-bold text-neutral-800">REKAPITULASI UKURAN</h4>
+              <div className="flex flex-wrap gap-2">
+                {filteredSizeRecap.length ? filteredSizeRecap.map(item => (
+                  <span key={item.size} className="rounded-lg border border-neutral-200 bg-white px-2.5 py-1.5 text-xs font-semibold">
+                    {item.size}: {item.quantity} PCS
+                  </span>
+                )) : <span className="text-xs text-neutral-500">Tidak ada data ukuran untuk filter ini.</span>}
+                <strong className="ml-auto self-center font-mono text-xs text-[#D71920]">TOTAL {getOrderTotalQuantity(inputMode, sizeFilteredPlayers)} PCS</strong>
+              </div>
+            </section>
+
             <div className="overflow-x-auto rounded-xl border border-neutral-200">
               <table className="w-full text-left text-xs border-collapse">
-                <thead>
-                  <tr className="bg-neutral-50 text-neutral-600 font-bold border-b border-neutral-200">
-                    <th className="py-2.5 px-3 w-12 text-center">No</th>
-                    <th className="py-2.5 px-3">Nama Pemain</th>
-                    <th className="py-2.5 px-3 w-28 text-center">No Punggung</th>
-                    <th className="py-2.5 px-3 w-28 text-center">Ukuran</th>
-                    <th className="py-2.5 px-3 w-20 text-center">Qty</th>
-                    <th className="py-2.5 px-3 w-28 text-center">Jenis Lengan</th>
-                    <th className="py-2.5 px-3">Catatan Khusus</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-neutral-200/60 bg-white">
-                  {filteredPlayers.map((p, idx) => (
-                    <tr key={p.id} className="hover:bg-neutral-50/70 font-mono text-[11px]">
-                      <td className="py-2 px-3 text-center text-neutral-400">{idx + 1}</td>
-                      <td className="py-2 px-3 font-sans font-bold text-neutral-900 uppercase">
-                        {p.name || '-'}
-                      </td>
-                      <td className="py-2 px-3 text-center font-bold text-neutral-800">
-                        {p.number || '-'}
-                      </td>
-                      <td className="py-2 px-3 text-center font-black text-[#D71920]">
-                        {p.size}
-                      </td>
-                      <td className="py-2 px-3 text-center font-bold">{p.quantity}</td>
-                      <td className="py-2 px-3 text-center font-sans text-neutral-700">{p.sleeve || product.sleeve || '-'}</td>
-                      <td className="py-2 px-3 font-sans text-neutral-600 whitespace-pre-wrap break-words">{displaySpecialNote(p.notes)}</td>
-                    </tr>
-                  ))}
-                </tbody>
+                {inputMode === 'size-quantity' ? (
+                  <>
+                    <thead><tr className="bg-neutral-50 text-neutral-600 font-bold"><th className="px-3 py-2.5">Ukuran</th><th className="px-3 py-2.5 text-right">Jumlah PCS</th></tr></thead>
+                    <tbody className="divide-y divide-neutral-200/60 bg-white">
+                      {filteredSizeRecap.map(item => <tr key={item.size}><td className="px-3 py-2 font-bold">{item.size}</td><td className="px-3 py-2 text-right font-mono font-bold">{item.quantity}</td></tr>)}
+                    </tbody>
+                  </>
+                ) : (
+                  <>
+                    <thead>
+                      <tr className="bg-neutral-50 text-neutral-600 font-bold border-b border-neutral-200">
+                        <th className="py-2.5 px-3 w-12 text-center">No</th>
+                        <th className="py-2.5 px-3">Nama Pemain</th>
+                        <th className="py-2.5 px-3 w-28 text-center">No Punggung</th>
+                        <th className="py-2.5 px-3 w-28 text-center">Ukuran</th>
+                        <th className="py-2.5 px-3 w-28 text-center">Jenis Lengan</th>
+                        <th className="py-2.5 px-3">Catatan Khusus</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-neutral-200/60 bg-white">
+                      {filteredPlayers.map((p, idx) => (
+                        <tr key={p.id} className="hover:bg-neutral-50/70 font-mono text-[11px]">
+                          <td className="py-2 px-3 text-center text-neutral-400">{idx + 1}</td>
+                          <td className="py-2 px-3 font-sans font-bold text-neutral-900 uppercase">{p.name || '-'}</td>
+                          <td className="py-2 px-3 text-center font-bold text-neutral-800">{p.number || '-'}</td>
+                          <td className="py-2 px-3 text-center font-black text-[#D71920]">{p.size}</td>
+                          <td className="py-2 px-3 text-center font-sans text-neutral-700">{p.sleeve || product.sleeve || '-'}</td>
+                          <td className="py-2 px-3 font-sans text-neutral-600 whitespace-pre-wrap break-words">{displaySpecialNote(p.notes)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </>
+                )}
               </table>
             </div>
           </div>
@@ -656,7 +712,7 @@ export const OrderDetail: React.FC<OrderDetailProps> = ({
                   setIsDownloadingPdf(true);
                   try {
                     if (onDownloadPdf) {
-                      await onDownloadPdf(order);
+                      await onDownloadPdf(filteredOrder);
                     }
                   } finally {
                     setIsDownloadingPdf(false);
@@ -670,7 +726,7 @@ export const OrderDetail: React.FC<OrderDetailProps> = ({
 
               <button
                 type="button"
-                onClick={() => onPrint(order)}
+                onClick={() => onPrint(filteredOrder)}
                 className="flex items-center gap-1.5 px-3 py-2 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 rounded-xl text-xs font-semibold transition-colors"
               >
                 <Printer className="w-3.5 h-3.5" />
@@ -680,7 +736,7 @@ export const OrderDetail: React.FC<OrderDetailProps> = ({
           </div>
 
           <div className="w-full max-w-[780px]">
-            <InvoicePreviewA4 order={order} mode="preview" />
+            <InvoicePreviewA4 order={filteredOrder} mode="preview" />
           </div>
         </div>
       )}
@@ -756,9 +812,10 @@ export const OrderDetail: React.FC<OrderDetailProps> = ({
         defaultSleeve={product.sleeve}
         onApply={(newPlayers, mode) => {
           const updatedPlayers = mode === 'replace' ? newPlayers : [...order.players, ...newPlayers];
-          const totalQuantity = updatedPlayers.reduce((sum, player) => sum + (Number(player.quantity) || 0), 0);
+          const totalQuantity = updatedPlayers.filter(isValidRosterPlayer).length;
           const updated: Order = {
             ...order,
+            inputMode: 'roster',
             players: updatedPlayers,
             product: {
               ...order.product,

@@ -5,6 +5,7 @@ import { CollarUploadControl } from './CollarUploadControl';
 import { supabaseOrderService } from '../../services/supabase/orderService';
 import { SalesOrderFields } from './SalesOrderFields';
 import { useMasterData } from '../../hooks/useMasterData';
+import { getOrderTotalQuantity } from '../../utils/orderSizing';
 
 interface EditModalBaseProps {
   isOpen: boolean;
@@ -33,7 +34,7 @@ export const EditCustomerModal: React.FC<EditModalBaseProps> = ({ isOpen, onClos
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (isSaving) return;
-    if (!externalOrderNumber.trim()) {
+    if (salesChannel !== 'Offline' && !externalOrderNumber.trim()) {
       setValidationError('Nomor pesanan wajib diisi.');
       return;
     }
@@ -43,11 +44,10 @@ export const EditCustomerModal: React.FC<EditModalBaseProps> = ({ isOpen, onClos
       await onSave({
         ...order,
         salesChannel,
-        externalOrderNumber: externalOrderNumber.trim(),
+        externalOrderNumber: salesChannel === 'Offline' ? '' : externalOrderNumber.trim(),
         customer: {
           ...customer,
           name: customer.name.toUpperCase(),
-          teamName: customer.teamName?.toUpperCase(),
         },
       });
       onClose();
@@ -96,16 +96,6 @@ export const EditCustomerModal: React.FC<EditModalBaseProps> = ({ isOpen, onClos
             />
           </div>
 
-          <div>
-            <label className="block font-semibold text-neutral-700 mb-1">Nama Tim / Komunitas</label>
-            <input
-              type="text"
-              value={customer.teamName || ''}
-              onChange={e => setCustomer({ ...customer, teamName: e.target.value })}
-              className="w-full px-3 py-2 rounded-xl border border-neutral-200 focus:border-[#D71920] outline-none uppercase font-semibold"
-            />
-          </div>
-
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block font-semibold text-neutral-700 mb-1">Tanggal Order</label>
@@ -129,6 +119,7 @@ export const EditCustomerModal: React.FC<EditModalBaseProps> = ({ isOpen, onClos
 
           <SalesOrderFields
             salesChannel={salesChannel}
+            orderNumber={order.orderNumber}
             externalOrderNumber={externalOrderNumber}
             onChange={(channel, number) => {
               setSalesChannel(channel);
@@ -174,6 +165,9 @@ export const EditProductModal: React.FC<EditModalBaseProps> = ({ isOpen, onClose
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const masterData = useMasterData();
+  const totalQuantity = order.players.length
+    ? getOrderTotalQuantity(order.inputMode, order.players)
+    : order.product.totalQuantity;
   useEffect(() => {
     if (isOpen) {
       setProduct({ ...order.product });
@@ -185,7 +179,7 @@ export const EditProductModal: React.FC<EditModalBaseProps> = ({ isOpen, onClose
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (isSaving) return;
-    const totalPrice = product.totalQuantity * product.unitPrice;
+    const totalPrice = totalQuantity * product.unitPrice;
     const remainingPayment = Math.max(0, totalPrice - product.downPayment);
 
     setIsSaving(true);
@@ -195,6 +189,7 @@ export const EditProductModal: React.FC<EditModalBaseProps> = ({ isOpen, onClose
         ...order,
         product: {
           ...product,
+          totalQuantity,
           totalPrice,
           remainingPayment,
         },
@@ -252,13 +247,7 @@ export const EditProductModal: React.FC<EditModalBaseProps> = ({ isOpen, onClose
 
             <div>
               <label className="block font-bold text-neutral-700 mb-1">Total Pcs</label>
-              <input
-                type="number"
-                min="1"
-                value={product.totalQuantity}
-                onChange={e => setProduct({ ...product, totalQuantity: parseInt(e.target.value) || 1 })}
-                className="w-full px-3 py-2 rounded-xl border border-neutral-200 outline-none font-mono font-bold text-neutral-900"
-              />
+              <div className="w-full rounded-xl border border-neutral-200 bg-neutral-100 px-3 py-2 font-mono font-bold text-neutral-900">{totalQuantity} PCS (otomatis)</div>
             </div>
           </div>
 

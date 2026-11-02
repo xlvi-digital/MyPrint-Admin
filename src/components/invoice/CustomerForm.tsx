@@ -1,6 +1,6 @@
 import React from 'react';
 import { Customer } from '../../types/order';
-import { User, Phone, Mail, Users, MapPin, Calendar, Hash } from 'lucide-react';
+import { User, Phone, Mail, MapPin, Calendar, Hash } from 'lucide-react';
 
 interface CustomerFormProps {
   customer: Customer;
@@ -29,7 +29,7 @@ export const CustomerForm: React.FC<CustomerFormProps> = ({
             <span>Data Pemesan & Kontak</span>
           </h2>
           <p className="text-xs text-neutral-400 mt-0.5">
-            Informasi identitas pelanggan, nama tim, kontak WhatsApp, dan tanggal tenggat.
+            Informasi identitas pelanggan, kontak WhatsApp, dan tanggal tenggat.
           </p>
         </div>
         <span className="text-[11px] font-semibold text-neutral-400 bg-neutral-100 px-2 py-0.5 rounded">
@@ -99,22 +99,6 @@ export const CustomerForm: React.FC<CustomerFormProps> = ({
           />
           {errors.phone && <p className="text-[11px] text-red-600 mt-1">{errors.phone}</p>}
           <p className="text-[10px] text-neutral-400 mt-1">Nomor aktif untuk konfirmasi produksi</p>
-        </div>
-
-        {/* Nama Tim / Instansi */}
-        <div>
-          <label className="block text-xs font-semibold text-neutral-700 mb-1 flex items-center gap-1.5">
-            <Users className="w-3.5 h-3.5 text-neutral-400" />
-            Nama Tim / Instansi
-          </label>
-          <input
-            type="text"
-            value={customer.teamName || ''}
-            onChange={e => updateField('teamName', e.target.value)}
-            placeholder="Contoh: PASDAMA PASKIBRA / GARUDA FC"
-            className="w-full px-3 py-2 text-xs rounded-xl border border-neutral-200 focus:border-neutral-400 bg-neutral-50/50 focus:bg-white outline-none transition-all font-medium"
-          />
-          <p className="text-[10px] text-neutral-400 mt-1">Opsional: nama komunitas, club, atau sekolah</p>
         </div>
 
         {/* Tanggal Order */}

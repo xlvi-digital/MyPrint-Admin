@@ -23,6 +23,7 @@ import {
   ClipboardPaste,
   Shirt,
   FileText,
+  FileSpreadsheet,
   ArrowRight,
   Check,
   Sparkles,
@@ -31,9 +32,11 @@ import {
 } from "lucide-react";
 import { WhatsAppParserModal } from "../components/order/WhatsAppParserModal";
 import { PlayerFastPasteModal } from "../components/order/PlayerFastPasteModal";
+import { ImportCsvModal } from "../components/invoice/ImportCsvModal";
 import { DesignUploader } from "../components/invoice/DesignUploader";
-import { groupRosterPlayers, getRosterSizeTotals } from "../utils/rosterGrouping";
 import { RosterSizeSummary } from "../components/invoice/RosterSizeSummary";
+import { SizeQuantityTable } from "../components/invoice/SizeQuantityTable";
+import { getOrderTotalQuantity, isValidRosterPlayer, isValidSizeQuantity } from "../utils/orderSizing";
 import { InvoicePreviewA4 } from "../components/invoice/InvoicePreviewA4";
 import { SalesOrderFields } from "../components/order/SalesOrderFields";
 import { useMasterData } from "../hooks/useMasterData";
@@ -41,19 +44,21 @@ import { useMasterData } from "../hooks/useMasterData";
 interface QuickOrderProps {
   onOrderCreated: (order: Order) => Promise<Order | void> | Order | void;
   onCancel: () => void;
+  initialWhatsAppData?: WhatsAppParseResult | null;
+  onInitialWhatsAppDataApplied?: () => void;
 }
 
 export const QuickOrder: React.FC<QuickOrderProps> = ({
   onOrderCreated,
   onCancel,
+  initialWhatsAppData,
+  onInitialWhatsAppDataApplied,
 }) => {
   // Primary Mandatory Fields (Section 6 & 35)
   const [customerName, setCustomerName] = useState("");
   const [phone, setPhone] = useState("");
-  const [teamName, setTeamName] = useState("");
   const [productType, setProductType] = useState("Jersey Sublime");
   const [material, setMaterial] = useState("Milano");
-  const [quantity, setQuantity] = useState<number>(20);
   const [unitPrice, setUnitPrice] = useState<number>(110000);
   const [salesChannel, setSalesChannel] = useState<SalesChannel>("Offline");
   const [externalOrderNumber, setExternalOrderNumber] = useState("");
@@ -63,10 +68,10 @@ export const QuickOrder: React.FC<QuickOrderProps> = ({
   const [enablePlayers, setEnablePlayers] = useState(false);
   const [enableDesigns, setEnableDesigns] = useState(false);
   const [enableCollarRib, setEnableCollarRib] = useState(false);
-  const [enableNotes, setEnableNotes] = useState(false);
 
   // Secondary Data
   const [players, setPlayers] = useState<PlayerDetail[]>([]);
+  const [sizeQuantities, setSizeQuantities] = useState<PlayerDetail[]>([]);
   const [designs, setDesigns] = useState<DesignAsset[]>([]);
   const [collarSpec, setCollarSpec] = useState<CollarSpec>({
     modelName: "POLO KANCING 2",
@@ -83,6 +88,7 @@ export const QuickOrder: React.FC<QuickOrderProps> = ({
   // Modals & Submission States
   const [isWaModalOpen, setIsWaModalOpen] = useState(false);
   const [isPasteRosterModalOpen, setIsPasteRosterModalOpen] = useState(false);
+  const [isRosterImportModalOpen, setIsRosterImportModalOpen] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -91,29 +97,25 @@ export const QuickOrder: React.FC<QuickOrderProps> = ({
   );
 
   // Recalculate price
-  const totalPrice = (quantity || 0) * (unitPrice || 0);
-  const groupedPlayers = groupRosterPlayers(players);
-  const sizeTotals = getRosterSizeTotals(players);
+  const inputMode = enablePlayers ? 'roster' : 'size-quantity';
+  const activeSizeRows = enablePlayers ? players : sizeQuantities;
+  const quantity = getOrderTotalQuantity(inputMode, activeSizeRows);
+  const totalPrice = quantity * (unitPrice || 0);
 
   // Handle WhatsApp parsed data application
   const handleApplyWhatsApp = (res: WhatsAppParseResult) => {
     if (res.customerName) setCustomerName(res.customerName);
     if (res.phone) setPhone(res.phone);
-    if (res.teamName) setTeamName(res.teamName);
     if (res.material) setMaterial(res.material);
-    if (res.quantity) setQuantity(res.quantity);
     if (res.productType) setProductType(res.productType);
     if (res.rib) {
       setRibType(res.rib);
-      setEnableCollarRib(true);
     }
     if (res.collar) {
       setCollarSpec((prev) => ({ ...prev, modelName: res.collar! }));
-      setEnableCollarRib(true);
     }
     if (res.notes && res.notes.length > 0) {
       setNotes(res.notes.join("\n"));
-      setEnableNotes(true);
     }
     if (res.players && res.players.length > 0) {
       const playerDetails: PlayerDetail[] = res.players.map((p, idx) => ({
@@ -121,12 +123,17 @@ export const QuickOrder: React.FC<QuickOrderProps> = ({
         name: p.name,
         number: p.number,
         size: p.size,
-        quantity: p.quantity,
+        quantity: 1,
       }));
       setPlayers(playerDetails);
-      setEnablePlayers(true);
     }
   };
+
+  useEffect(() => {
+    if (!initialWhatsAppData) return;
+    handleApplyWhatsApp(initialWhatsAppData);
+    onInitialWhatsAppDataApplied?.();
+  }, [initialWhatsAppData, onInitialWhatsAppDataApplied]);
 
   const handleAddPlayerRow = () => {
     setPlayers((prev) => [
@@ -159,10 +166,9 @@ export const QuickOrder: React.FC<QuickOrderProps> = ({
     imported: PlayerDetail[],
     mode: "replace" | "append",
   ) => {
-    const updatedPlayers = mode === "replace" ? imported : [...players, ...imported];
+    const updatedPlayers = (mode === "replace" ? imported : [...players, ...imported])
+      .map(player => ({ ...player, quantity: 1 }));
     setPlayers(updatedPlayers);
-    setQuantity(updatedPlayers.reduce((sum, player) => sum + (Number(player.quantity) || 0), 0));
-    setEnablePlayers(true);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -172,14 +178,15 @@ export const QuickOrder: React.FC<QuickOrderProps> = ({
 
     if (!customerName.trim()) err.customerName = "Nama pemesan wajib diisi";
     if (!phone.trim()) err.phone = "No WhatsApp wajib diisi";
-    if (!quantity || quantity <= 0) err.quantity = "Total jumlah minimal 1";
-    if (!externalOrderNumber.trim()) err.externalOrderNumber = "Nomor pesanan wajib diisi";
+    if (!quantity) err.quantity = "Isi setidaknya satu baris ukuran yang valid.";
+    if (salesChannel !== "Offline" && !externalOrderNumber.trim()) err.externalOrderNumber = "Nomor pesanan wajib diisi";
     if (masterData.isLoading) err.masterData = "Data master masih dimuat. Coba simpan kembali sebentar lagi.";
     else if (masterData.error) err.masterData = masterData.error;
     else {
       if (!masterData.data.product_types.some(item => item.isActive && item.name === productType)) err.productType = "Pilih jenis produk aktif dari Data Master.";
       if (!masterData.data.materials.some(item => item.isActive && item.name === material)) err.material = "Pilih jenis bahan aktif dari Data Master.";
-      if (enablePlayers && players.some(player => !masterData.data.jersey_sizes.some(
+      const validRows = enablePlayers ? players.filter(isValidRosterPlayer) : sizeQuantities.filter(isValidSizeQuantity);
+      if (validRows.some(player => !masterData.data.jersey_sizes.some(
         size => size.isActive && (size.code === player.size || size.name === player.size),
       ))) err.playerSizes = "Roster berisi ukuran nonaktif atau belum terdaftar.";
     }
@@ -196,11 +203,10 @@ export const QuickOrder: React.FC<QuickOrderProps> = ({
       id: newId,
       orderNumber,
       salesChannel,
-      externalOrderNumber: externalOrderNumber.trim(),
+      externalOrderNumber: salesChannel === "Offline" ? "" : externalOrderNumber.trim(),
       customer: {
         name: customerName.trim().toUpperCase(),
         phone: phone.trim(),
-        teamName: teamName.trim().toUpperCase(),
         orderDate: getTodayDateString(),
         deadlineDate,
         orderNumber,
@@ -211,24 +217,28 @@ export const QuickOrder: React.FC<QuickOrderProps> = ({
         color: "",
         model: "Reguler Fit",
         sleeve: "Pendek",
-        rib: ribType,
+        rib: enableCollarRib ? ribType : "Tidak Pakai Rib",
         totalQuantity: quantity,
         unitPrice,
         totalPrice,
         downPayment: Math.round(totalPrice * 0.5),
         remainingPayment: Math.round(totalPrice * 0.5),
       },
-      players: enablePlayers ? players : [],
+      inputMode,
+      players: activeSizeRows,
       useTableThreshold: 5,
       printingMachines: [
         { id: "m1", name: "MESIN EPSON F7270" },
         { id: "m2", name: "MESIN EPSON F7270" },
       ],
       designs: enableDesigns ? designs : [],
-      collar: {
-        ...collarSpec,
+      features: {
+        designs: enableDesigns,
+        collarRib: enableCollarRib,
+        notes: enableCollarRib,
       },
-      notes: notes || "DATA TERPISAH DI HALAMAN BELAKANG",
+      collar: enableCollarRib ? { ...collarSpec } : { modelName: "POLO KANCING 2" },
+      notes: enableCollarRib ? (notes || "DATA TERPISAH DI HALAMAN BELAKANG") : "",
       productionStatus: "DRAFT",
       signoff: {
         designerName: "",
@@ -246,7 +256,7 @@ export const QuickOrder: React.FC<QuickOrderProps> = ({
 
     try {
       // If user selected a collar image file, upload to Supabase Storage linked to this order ID
-      if (pendingCollarFile) {
+      if (enableCollarRib && pendingCollarFile) {
         try {
           const uploadRes = await supabaseStorageService.uploadCollarImage(
             newId,
@@ -289,7 +299,6 @@ export const QuickOrder: React.FC<QuickOrderProps> = ({
     customer: {
       name: customerName.trim().toUpperCase(),
       phone: phone.trim(),
-      teamName: teamName.trim().toUpperCase(),
       orderDate: getTodayDateString(),
       deadlineDate,
       orderNumber: previewOrderNumber,
@@ -300,22 +309,28 @@ export const QuickOrder: React.FC<QuickOrderProps> = ({
       color: "",
       model: "Reguler Fit",
       sleeve: "Pendek",
-      rib: ribType,
+      rib: enableCollarRib ? ribType : "Tidak Pakai Rib",
       totalQuantity: quantity,
       unitPrice,
       totalPrice,
       downPayment: Math.round(totalPrice * 0.5),
       remainingPayment: Math.round(totalPrice * 0.5),
     },
-    players: enablePlayers ? players : [],
+    inputMode,
+    players: activeSizeRows,
     useTableThreshold: 5,
     printingMachines: [
       { id: "m1", name: "MESIN EPSON F7270" },
       { id: "m2", name: "MESIN EPSON F7270" },
     ],
     designs: enableDesigns ? designs : [],
-    collar: { ...collarSpec },
-    notes: notes || "DATA TERPISAH DI HALAMAN BELAKANG",
+    features: {
+      designs: enableDesigns,
+      collarRib: enableCollarRib,
+      notes: enableCollarRib,
+    },
+    collar: enableCollarRib ? { ...collarSpec } : { modelName: "POLO KANCING 2" },
+    notes: enableCollarRib ? (notes || "DATA TERPISAH DI HALAMAN BELAKANG") : "",
     productionStatus: "DRAFT",
     signoff: {
       designerName: "",
@@ -433,29 +448,16 @@ export const QuickOrder: React.FC<QuickOrderProps> = ({
                 )}
               </div>
 
-              {/* Nama Tim / Instansi */}
-              <div>
-                <label className="block text-xs font-semibold text-neutral-700 mb-1">
-                  Nama Tim / Instansi (Opsional)
-                </label>
-                <input
-                  type="text"
-                  value={teamName}
-                  onChange={(e) => setTeamName(e.target.value.toUpperCase())}
-                  placeholder="PASDAMA PASKIBRA / GARUDA FC"
-                  className="w-full px-3.5 py-2.5 text-xs rounded-2xl border border-neutral-200 bg-neutral-50/50 focus:bg-white focus:border-[#D71920] outline-none font-semibold uppercase"
-                />
-              </div>
-
               <SalesOrderFields
                 salesChannel={salesChannel}
+                orderNumber=""
                 externalOrderNumber={externalOrderNumber}
                 onChange={(channel, number) => {
                   setSalesChannel(channel);
                   setExternalOrderNumber(number);
                 }}
               />
-              {errors.externalOrderNumber && (
+              {salesChannel !== "Offline" && errors.externalOrderNumber && (
                 <p className="text-[11px] font-semibold text-red-600">{errors.externalOrderNumber}</p>
               )}
               {errors.masterData && <p className="text-[11px] font-semibold text-red-600">{errors.masterData}</p>}
@@ -499,19 +501,9 @@ export const QuickOrder: React.FC<QuickOrderProps> = ({
               {/* Total Jumlah Pcs & Harga */}
               <div className="grid grid-cols-2 gap-2">
                 <div>
-                  <label className="block text-xs font-bold text-neutral-700 mb-1">
-                    Jumlah (Pcs) <span className="text-[#D71920]">*</span>
-                  </label>
-                  <input
-                    type="number"
-                    min="1"
-                    required
-                    value={quantity || ""}
-                    onChange={(e) =>
-                      setQuantity(Math.max(1, parseInt(e.target.value) || 0))
-                    }
-                    className="w-full px-3.5 py-2.5 text-xs rounded-2xl border border-neutral-200 bg-neutral-50/50 focus:bg-white focus:border-[#D71920] outline-none font-mono font-black text-neutral-900"
-                  />
+                  <label className="block text-xs font-bold text-neutral-700 mb-1">Total PCS Otomatis</label>
+                  <div className="rounded-2xl border border-neutral-200 bg-neutral-100 px-3.5 py-2.5 font-mono text-xs font-black text-neutral-900">{quantity} PCS</div>
+                  {errors.quantity && <p className="mt-1 text-[10px] text-red-600">{errors.quantity}</p>}
                 </div>
 
                 <div>
@@ -532,100 +524,22 @@ export const QuickOrder: React.FC<QuickOrderProps> = ({
             </div>
           </div>
 
-          {/* SECTION 2: SMART PROGRESSIVE DISCLOSURE (Requirement #7 & #17) */}
-          <div className="bg-white rounded-3xl border border-neutral-200/80 p-6 shadow-2xs space-y-4">
-            <div className="pb-3 border-b border-neutral-100">
-              <span className="text-xs font-bold text-neutral-900 uppercase tracking-wider block">
-                Fitur Tambahan (Hanya buka jika diperlukan order)
-              </span>
-              <p className="text-[11px] text-neutral-400 mt-0.5">
-                Tidak perlu mengisi jika order tidak membutuhkan data pemain
-                atau desain khusus.
-              </p>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              {/* Toggle 1: Nama & Nomor Punggung */}
-              <label
-                className={`p-4 rounded-2xl border cursor-pointer transition-all flex items-start gap-3 ${
-                  enablePlayers
-                    ? "bg-red-50/50 border-red-200"
-                    : "bg-neutral-50/70 border-neutral-200"
-                }`}
-              >
-                <input
-                  type="checkbox"
-                  checked={enablePlayers}
-                  onChange={(e) => setEnablePlayers(e.target.checked)}
-                  className="mt-0.5 w-4 h-4 rounded text-[#D71920] accent-[#D71920]"
-                />
-                <div>
-                  <span className="font-bold text-xs text-neutral-900 block">
-                    Data Nama / Nomor Punggung
-                  </span>
-                  <span className="text-[11px] text-neutral-400">
-                    Roster ukuran & personalisasi pemain
-                  </span>
-                </div>
-              </label>
-
-              {/* Toggle 2: Upload Desain */}
-              <label
-                className={`p-4 rounded-2xl border cursor-pointer transition-all flex items-start gap-3 ${
-                  enableDesigns
-                    ? "bg-red-50/50 border-red-200"
-                    : "bg-neutral-50/70 border-neutral-200"
-                }`}
-              >
-                <input
-                  type="checkbox"
-                  checked={enableDesigns}
-                  onChange={(e) => setEnableDesigns(e.target.checked)}
-                  className="mt-0.5 w-4 h-4 rounded text-[#D71920] accent-[#D71920]"
-                />
-                <div>
-                  <span className="font-bold text-xs text-neutral-900 block">
-                    Upload Visual Desain
-                  </span>
-                  <span className="text-[11px] text-neutral-400">
-                    File artwork sublimasi / referensi
-                  </span>
-                </div>
-              </label>
-
-              {/* Toggle 3: Keterangan & Kerah */}
-              <label
-                className={`p-4 rounded-2xl border cursor-pointer transition-all flex items-start gap-3 ${
-                  enableCollarRib
-                    ? "bg-red-50/50 border-red-200"
-                    : "bg-neutral-50/70 border-neutral-200"
-                }`}
-              >
-                <input
-                  type="checkbox"
-                  checked={enableCollarRib}
-                  onChange={(e) => setEnableCollarRib(e.target.checked)}
-                  className="mt-0.5 w-4 h-4 rounded text-[#D71920] accent-[#D71920]"
-                />
-                <div>
-                  <span className="font-bold text-xs text-neutral-900 block">
-                    Model Kerah & Catatan
-                  </span>
-                  <span className="text-[11px] text-neutral-400">
-                    Polo kancing, rib leher, instruksi kerja
-                  </span>
-                </div>
-              </label>
-            </div>
-
-            {/* DISCLOSED SECTION: PLAYER ROSTER TABLE */}
-            {enablePlayers && (
-              <div className="pt-4 border-t border-neutral-100 space-y-3 animate-in fade-in duration-200">
+          {/* Optional forms are rendered before their single activation card. */}
+          {enablePlayers && (
+            <div className="pt-4 border-t border-neutral-100 space-y-3">
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-bold text-neutral-900">
                     Tabel Roster Pemain ({players.length} Data)
                   </span>
                   <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setIsRosterImportModalOpen(true)}
+                      className="flex items-center gap-1.5 rounded-xl bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-800 hover:bg-emerald-100"
+                    >
+                      <FileSpreadsheet className="h-3.5 w-3.5" />
+                      <span>Import Excel</span>
+                    </button>
                     <button
                       type="button"
                       onClick={() => setIsPasteRosterModalOpen(true)}
@@ -653,7 +567,6 @@ export const QuickOrder: React.FC<QuickOrderProps> = ({
                         <th className="py-2 px-3">Nama Punggung</th>
                         <th className="py-2 px-3 w-24 text-center">Nomor</th>
                         <th className="py-2 px-3 w-28 text-center">Ukuran</th>
-                        <th className="py-2 px-3 w-16 text-center">Qty</th>
                         <th className="py-2 px-3 w-32 text-center">Lengan</th>
                         <th className="py-2 px-3 min-w-48">Catatan Khusus</th>
                         <th className="py-2 px-3 w-12 text-center">Hapus</th>
@@ -663,7 +576,7 @@ export const QuickOrder: React.FC<QuickOrderProps> = ({
                       {players.length === 0 ? (
                         <tr>
                           <td
-                            colSpan={8}
+                            colSpan={7}
                             className="py-6 text-center text-neutral-400"
                           >
                             Klik <strong>+ Baris</strong> atau{" "}
@@ -672,15 +585,7 @@ export const QuickOrder: React.FC<QuickOrderProps> = ({
                           </td>
                         </tr>
                       ) : (
-                        groupedPlayers.map(({ player: p, group }, idx) => (
-                          <React.Fragment key={p.id}>
-                          {(idx === 0 || groupedPlayers[idx - 1].group !== group) && (
-                            <tr className="bg-neutral-50">
-                              <td colSpan={8} className="border-y border-neutral-200 px-3 py-1.5 text-[11px] font-bold text-neutral-700">
-                                Kelompok {group} — {sizeTotals[group] || 0} pcs
-                              </td>
-                            </tr>
-                          )}
+                        players.map((p, idx) => (
                           <tr key={p.id} className="hover:bg-neutral-50/70">
                             <td className="py-1.5 px-3 text-center text-neutral-400 font-mono text-[11px]">
                               {idx + 1}
@@ -731,21 +636,6 @@ export const QuickOrder: React.FC<QuickOrderProps> = ({
                                   <option key={size.id} value={size.code || size.name}>{size.name}</option>
                                 ))}
                               </select>
-                            </td>
-                            <td className="py-1 px-3">
-                              <input
-                                type="number"
-                                min="1"
-                                value={p.quantity}
-                                onChange={(e) =>
-                                  handleUpdatePlayer(
-                                    p.id,
-                                    "quantity",
-                                    parseInt(e.target.value) || 1,
-                                  )
-                                }
-                                className="w-full text-center px-2 py-1 rounded-lg border border-transparent outline-none font-mono font-bold"
-                              />
                             </td>
                             <td className="py-1 px-3">
                               <select
@@ -802,7 +692,6 @@ export const QuickOrder: React.FC<QuickOrderProps> = ({
                               </button>
                             </td>
                           </tr>
-                          </React.Fragment>
                         ))
                       )}
                     </tbody>
@@ -810,11 +699,15 @@ export const QuickOrder: React.FC<QuickOrderProps> = ({
                 </div>
                 <RosterSizeSummary players={players} />
               </div>
-            )}
+          )}
+          {!enablePlayers && (
+            <div className="pt-4 border-t border-neutral-100">
+              <SizeQuantityTable rows={sizeQuantities} onChange={setSizeQuantities} />
+            </div>
+          )}
 
-            {/* DISCLOSED SECTION: DESIGN UPLOAD */}
-            {enableDesigns && (
-              <div className="pt-4 border-t border-neutral-100 animate-in fade-in duration-200">
+          {enableDesigns && (
+            <div className="pt-4 border-t border-neutral-100">
                 <DesignUploader
                   orderId={draftOrderId}
                   designs={designs}
@@ -822,12 +715,11 @@ export const QuickOrder: React.FC<QuickOrderProps> = ({
                   materialName={material}
                   disabled={isSubmitting}
                 />
-              </div>
-            )}
+            </div>
+          )}
 
-            {/* DISCLOSED SECTION: COLLAR & NOTES */}
-            {enableCollarRib && (
-              <div className="pt-4 border-t border-neutral-100 space-y-4 animate-in fade-in duration-200">
+          {enableCollarRib && (
+            <div className="pt-4 border-t border-neutral-100 space-y-4">
                 {/* Collar Model & Image Reference Upload */}
                 <div className="p-4 bg-neutral-50/80 rounded-2xl border border-neutral-200/80">
                   <CollarUploadControl
@@ -861,7 +753,6 @@ export const QuickOrder: React.FC<QuickOrderProps> = ({
                     </option>
                   </select>
                 </div>
-
                 <div>
                   <label className="block text-xs font-semibold text-neutral-700 mb-1">
                     Catatan Khusus Produksi
@@ -874,9 +765,57 @@ export const QuickOrder: React.FC<QuickOrderProps> = ({
                     className="w-full px-3 py-2 text-xs font-mono rounded-xl border border-neutral-200 outline-none uppercase"
                   />
                 </div>
-              </div>
-            )}
-          </div>
+            </div>
+          )}
+
+          <section className="rounded-3xl border border-neutral-200/80 bg-white p-5 shadow-2xs sm:p-6">
+            <header className="mb-6 border-b border-neutral-100 pb-4">
+              <h2 className="text-base font-bold uppercase tracking-wide text-neutral-900">
+                Fitur Tambahan (Hanya Buka Jika Diperlukan Order)
+              </h2>
+              <p className="mt-1 text-sm text-neutral-400">
+                Tidak perlu mengisi jika order tidak membutuhkan data pemain atau desain khusus.
+              </p>
+            </header>
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+              <label className="flex min-h-28 cursor-pointer items-start gap-4 rounded-3xl border border-neutral-200 bg-neutral-50/70 p-5 transition-colors hover:bg-neutral-100">
+                <input
+                  type="checkbox"
+                  checked={enablePlayers}
+                  onChange={event => setEnablePlayers(event.target.checked)}
+                  className="mt-0.5 h-6 w-6 shrink-0 accent-[#D71920]"
+                />
+                <span>
+                  <span className="block text-base font-semibold text-neutral-900">Data Nama / Nomor Punggung</span>
+                  <span className="mt-2 block text-sm text-neutral-400">Roster ukuran &amp; personalisasi pemain</span>
+                </span>
+              </label>
+              <label className="flex min-h-28 cursor-pointer items-start gap-4 rounded-3xl border border-neutral-200 bg-neutral-50/70 p-5 transition-colors hover:bg-neutral-100">
+                <input
+                  type="checkbox"
+                  checked={enableDesigns}
+                  onChange={event => setEnableDesigns(event.target.checked)}
+                  className="mt-0.5 h-6 w-6 shrink-0 accent-[#D71920]"
+                />
+                <span>
+                  <span className="block text-base font-semibold text-neutral-900">Upload Visual Desain</span>
+                  <span className="mt-2 block text-sm text-neutral-400">File artwork sublimasi / referensi</span>
+                </span>
+              </label>
+              <label className="flex min-h-28 cursor-pointer items-start gap-4 rounded-3xl border border-neutral-200 bg-neutral-50/70 p-5 transition-colors hover:bg-neutral-100">
+                <input
+                  type="checkbox"
+                  checked={enableCollarRib}
+                  onChange={event => setEnableCollarRib(event.target.checked)}
+                  className="mt-0.5 h-6 w-6 shrink-0 accent-[#D71920]"
+                />
+                <span>
+                  <span className="block text-base font-semibold text-neutral-900">Model Kerah &amp; Catatan</span>
+                  <span className="mt-2 block text-sm text-neutral-400">Polo kancing, rib leher, instruksi kerja</span>
+                </span>
+              </label>
+            </div>
+          </section>
 
           {/* Submit Error Banner (Requirement: Don't lose user inputs on database error!) */}
           {submitError && (
@@ -976,6 +915,12 @@ export const QuickOrder: React.FC<QuickOrderProps> = ({
         onClose={() => setIsPasteRosterModalOpen(false)}
         defaultSleeve="Pendek"
         onApply={handleApplyPastedRoster}
+      />
+
+      <ImportCsvModal
+        isOpen={isRosterImportModalOpen}
+        onClose={() => setIsRosterImportModalOpen(false)}
+        onImport={handleApplyPastedRoster}
       />
     </div>
   );

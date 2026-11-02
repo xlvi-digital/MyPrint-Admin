@@ -1,62 +1,333 @@
 import React, { useLayoutEffect, useRef, useState } from 'react';
 import { Order } from '../../types/order';
 import { formatDateId } from '../../utils/formatters';
-import { measureRosterPages, paginateRosterPlayers, RosterPageItem } from '../../utils/rosterPagination';
+import { paginateRosterPlayers } from '../../utils/rosterPagination';
 import { displaySpecialNote, normalizeRoster } from '../../utils/rosterData';
+import { getOrderSizeRecap, getOrderTotalQuantity, isValidRosterPlayer, isValidSizeQuantity, resolveOrderInputMode } from '../../utils/orderSizing';
+import {
+  groupProductionRoster,
+  paginateProductionGroups,
+  ProductionPageGroup,
+  ProductionRosterGroup,
+} from '../../utils/productionRoster';
 
 interface OrderPrintDocumentProps {
   order: Order;
   mode?: 'print' | 'preview';
-  rosterPages?: RosterPageItem[][];
 }
+
+const PRINT_PAGE_STYLE: React.CSSProperties = {
+  boxSizing: 'border-box',
+  width: '794px',
+  height: '1123px',
+  minHeight: '1123px',
+  padding: '38px',
+  marginBottom: '24px',
+};
+
+function splitText(text: string, maximumLength: number): string[] {
+  const parts: string[] = [];
+  let remaining = text.trim().replace(/\s+/g, ' ');
+  while (remaining.length > maximumLength) {
+    let splitAt = remaining.lastIndexOf('\n', maximumLength);
+    if (splitAt < maximumLength * 0.6) splitAt = remaining.lastIndexOf(' ', maximumLength);
+    if (splitAt < maximumLength * 0.6) splitAt = maximumLength;
+    parts.push(remaining.slice(0, splitAt).trim());
+    remaining = remaining.slice(splitAt).trim();
+  }
+  if (remaining) parts.push(remaining);
+  return parts;
+}
+
+interface ProductionGroupBlockProps {
+  size: string;
+  quantity: number;
+  players: Order['players'];
+  groupIndex: number;
+  startIndex: number;
+  endIndex: number;
+  isRoster: boolean;
+  continued: boolean;
+  defaultSleeve: string;
+}
+
+const ProductionGroupBlock: React.FC<ProductionGroupBlockProps> = ({
+  size,
+  quantity,
+  players,
+  groupIndex,
+  startIndex,
+  endIndex,
+  isRoster,
+  continued,
+  defaultSleeve,
+}) => (
+  <section
+    data-production-group={groupIndex}
+    className="mb-3 overflow-hidden border-2 border-black"
+  >
+    <div className="flex items-center justify-between gap-3 bg-neutral-100 px-3 py-2">
+      <h3 className="text-sm font-black uppercase tracking-wide">
+        KELOMPOK UKURAN {size}{continued ? ' — LANJUTAN' : ''}
+      </h3>
+      <span className="shrink-0 font-mono text-sm font-black">{quantity} PCS</span>
+    </div>
+    {isRoster && (
+      <table className="w-full table-fixed border-collapse text-left font-sans text-[10px]">
+        <thead>
+          <tr data-production-table-header className="bg-black text-[10px] font-black uppercase text-white">
+            <th style={{ width: '6%' }} className="border-r border-neutral-700 px-1 py-1.5 text-center">No</th>
+            <th style={{ width: '28%' }} className="border-r border-neutral-700 px-2 py-1.5">Nama</th>
+            <th style={{ width: '14%' }} className="border-r border-neutral-700 px-1 py-1.5 text-center">No. Punggung</th>
+            <th style={{ width: '12%' }} className="border-r border-neutral-700 px-1 py-1.5 text-center">Ukuran</th>
+            <th style={{ width: '16%' }} className="border-r border-neutral-700 px-1 py-1.5 text-center">Lengan</th>
+            <th style={{ width: '24%' }} className="px-2 py-1.5">Catatan</th>
+          </tr>
+        </thead>
+        <tbody>
+          {players.slice(startIndex, endIndex).map((player, index) => (
+            <tr
+              key={player.id || startIndex + index}
+              data-production-row
+              className={`border-t border-neutral-300 align-top ${index % 2 ? 'bg-neutral-50' : 'bg-white'}`}
+            >
+              <td className="border-r border-neutral-300 px-1 py-1.5 text-center font-mono font-bold">
+                {startIndex + index + 1}
+              </td>
+              <td className="break-words border-r border-neutral-300 px-2 py-1.5 font-bold uppercase [overflow-wrap:anywhere]">
+                {player.name || '-'}
+              </td>
+              <td className="break-words border-r border-neutral-300 px-1 py-1.5 text-center font-mono font-bold [overflow-wrap:anywhere]">
+                {player.number || '-'}
+              </td>
+              <td className="break-words border-r border-neutral-300 px-1 py-1.5 text-center font-bold [overflow-wrap:anywhere]">
+                {player.size || '-'}
+              </td>
+              <td className="break-words border-r border-neutral-300 px-1 py-1.5 text-center [overflow-wrap:anywhere]">
+                {player.sleeve || defaultSleeve || '-'}
+              </td>
+              <td className="break-words whitespace-pre-wrap px-2 py-1.5 [overflow-wrap:anywhere]">
+                {displaySpecialNote(player.notes)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    )}
+  </section>
+);
+
+interface ProductionPageHeaderProps {
+  orderNumber: string;
+  customerName: string;
+  pageNumber: number;
+  totalPages: number;
+  filterSizes?: string[];
+  groups: ProductionRosterGroup[];
+  totalQuantity: number;
+  showRecap: boolean;
+}
+
+const ProductionPageHeader: React.FC<ProductionPageHeaderProps> = ({
+  orderNumber,
+  customerName,
+  pageNumber,
+  totalPages,
+  filterSizes,
+  groups,
+  totalQuantity,
+  showRecap,
+}) => (
+  <div data-production-page-header>
+    <div className="flex items-start justify-between gap-3 border-b-2 border-black pb-2">
+      <div className="min-w-0">
+        <h2 className="text-xl font-black uppercase tracking-wide text-[#D71920]">
+          DAFTAR PRODUKSI BERDASARKAN UKURAN
+        </h2>
+        <p className="mt-1 break-words text-xs font-bold uppercase text-neutral-700 [overflow-wrap:anywhere]">
+          CUTTING & JAHIT · PEMESAN: {customerName || '-'}
+        </p>
+      </div>
+      <div className="shrink-0 text-right">
+        <div className="border-2 border-black bg-neutral-100 px-2 py-1 text-[10px] font-black uppercase">
+          NO. ORDER: <span className="font-mono text-[#D71920]">{orderNumber || '-'}</span>
+        </div>
+        <div className="mt-1 font-mono text-[10px] font-bold">HAL. {pageNumber}/{totalPages}</div>
+      </div>
+    </div>
+    <p className="mt-2 border border-red-300 bg-red-50 px-2 py-1.5 text-xs font-black uppercase text-[#D71920]">
+      Filter ukuran: {filterSizes?.length ? filterSizes.join(', ') : 'Semua Ukuran'}
+    </p>
+    {showRecap ? <div className="mt-2 border-2 border-black">
+      <div className="border-b border-black bg-neutral-100 px-2 py-1 text-[10px] font-black uppercase">
+        Rekapitulasi jumlah per ukuran
+      </div>
+      <table className="w-full table-fixed border-collapse text-[10px]">
+        <thead>
+          <tr className="bg-black text-left font-black uppercase text-white">
+            <th className="w-[30%] border-r border-neutral-700 px-2 py-1">Ukuran</th>
+            <th className="w-[20%] border-r border-neutral-700 px-2 py-1 text-right">Total PCS</th>
+            <th className="w-[30%] border-r border-neutral-700 px-2 py-1">Ukuran</th>
+            <th className="w-[20%] px-2 py-1 text-right">Total PCS</th>
+          </tr>
+        </thead>
+        <tbody>
+          {Array.from({ length: Math.ceil(groups.length / 2) }, (_, index) => {
+            const left = groups[index * 2];
+            const right = groups[index * 2 + 1];
+            return (
+              <tr key={left.size} className="border-t border-neutral-300">
+                <td className="border-r border-neutral-300 px-2 py-1 font-bold">{left.size}</td>
+                <td className="border-r border-neutral-300 px-2 py-1 text-right font-mono font-bold">{left.quantity}</td>
+                <td className="border-r border-neutral-300 px-2 py-1 font-bold">{right?.size || '-'}</td>
+                <td className="px-2 py-1 text-right font-mono font-bold">{right?.quantity ?? '-'}</td>
+              </tr>
+            );
+          })}
+          {groups.length === 0 && (
+            <tr>
+              <td colSpan={4} className="px-2 py-1.5 text-center font-bold text-neutral-500">
+                Belum ada data ukuran.
+              </td>
+            </tr>
+          )}
+        </tbody>
+        <tfoot>
+          <tr className="border-t-2 border-black bg-neutral-100 font-black">
+            <td colSpan={3} className="px-2 py-1.5 text-right uppercase">Total</td>
+            <td className="px-2 py-1.5 text-right font-mono">{totalQuantity} PCS</td>
+          </tr>
+        </tfoot>
+      </table>
+    </div> : (
+      <p className="mt-2 border border-black bg-neutral-100 px-2 py-1 text-[10px] font-black uppercase">
+        Total seluruh data terpilih: {totalQuantity} PCS
+      </p>
+    )}
+  </div>
+);
 
 export const OrderPrintDocument: React.FC<OrderPrintDocumentProps> = ({
   order,
   mode = 'print',
-  rosterPages,
 }) => {
   const { customer, product, printingMachines = [], designs = [], collar, notes, signoff } = order;
-  const players = normalizeRoster(order.players || []);
+  const inputMode = resolveOrderInputMode(order.inputMode, order.players || []);
+  const validSourcePlayers = inputMode === 'size-quantity'
+    ? (order.players || []).filter(isValidSizeQuantity)
+    : (order.players || []).filter(isValidRosterPlayer);
+  const players = normalizeRoster(validSourcePlayers);
 
-  const totalPlayerQty = players.reduce((sum, p) => sum + (Number(p.quantity) || 1), 0);
-  const totalDisplayQty = product.totalQuantity || totalPlayerQty || 0;
-  const isQtyMatch = totalPlayerQty === totalDisplayQty;
-  const qtyDiff = Math.abs(totalDisplayQty - totalPlayerQty);
+  const totalPlayerQty = getOrderTotalQuantity(inputMode, players);
+  const totalDisplayQty = validSourcePlayers.length > 0 || inputMode === 'size-quantity' || order.printFilterSizes?.length
+    ? totalPlayerQty
+    : product.totalQuantity || 0;
+  const isQtyMatch = validSourcePlayers.length === 0 && !order.printFilterSizes?.length
+    ? true
+    : totalPlayerQty === totalDisplayQty;
+  const qtyDiff = isQtyMatch ? 0 : Math.abs(totalDisplayQty - totalPlayerQty);
 
-  const hasRosterPages = players.length > 0;
+  const sizeRecap = getOrderSizeRecap(inputMode, players);
+  const productionGroups = groupProductionRoster(inputMode, players);
+  const sizeRecapPages: typeof sizeRecap[] = [];
+  for (let index = 0; index < sizeRecap.length; index += 24) {
+    sizeRecapPages.push(sizeRecap.slice(index, index + 24));
+  }
+  const notePages = splitText(notes || '', 260);
+  const continuedNotePages: string[][] = [];
+  for (let index = 1; index < notePages.length; index += 3) {
+    continuedNotePages.push(notePages.slice(index, index + 3));
+  }
+  const hasRosterPages = inputMode === 'roster' && players.length > 0;
+  const hasSizeQuantityPages = inputMode === 'size-quantity' && players.length > 0;
   const paginationKey = JSON.stringify([
     order.id,
+    inputMode,
     customer.orderNumber,
     customer.name,
     product.material,
     product.sleeve,
     product.totalQuantity,
     players,
+    order.printFilterSizes,
   ]);
   const paginationRoot = useRef<HTMLDivElement>(null);
-  const [measuredPagination, setMeasuredPagination] = useState<{
+  const [measuredProductionPagination, setMeasuredProductionPagination] = useState<{
     key: string;
-    pages: RosterPageItem[][];
+    pages: ProductionPageGroup[][];
   } | null>(null);
-  const playerChunks = rosterPages
-    || (measuredPagination?.key === paginationKey ? measuredPagination.pages : paginateRosterPlayers(players));
-  const totalPages = 1 + playerChunks.length;
+  const playerChunks = paginateRosterPlayers(players);
+  const fallbackProductionPage = productionGroups.map((group, groupIndex) => ({
+    groupIndex,
+    startIndex: 0,
+    endIndex: group.players.length,
+  }));
+  const productionPages = measuredProductionPagination?.key === paginationKey
+    ? measuredProductionPagination.pages
+    : [fallbackProductionPage];
+  const productionPaginationReady = productionGroups.length === 0
+    || measuredProductionPagination?.key === paginationKey;
+  const totalPages = 1
+    + continuedNotePages.length
+    + productionPages.length;
+  const productionStartPageNumber = 2 + continuedNotePages.length;
+  const isPaginationReady = productionPaginationReady;
 
   useLayoutEffect(() => {
-    if (rosterPages || measuredPagination?.key === paginationKey || !paginationRoot.current) return;
-    const pages = measureRosterPages(paginationRoot.current, players);
-    setMeasuredPagination({ key: paginationKey, pages });
-  }, [paginationKey, measuredPagination?.key, players, rosterPages]);
+    if (productionGroups.length === 0
+      || measuredProductionPagination?.key === paginationKey
+      || !paginationRoot.current) return;
+
+    const page = paginationRoot.current.querySelector<HTMLElement>('[data-production-measure-page]');
+    const pageHeader = page?.querySelector<HTMLElement>('[data-production-page-header]');
+    if (!page || !pageHeader) {
+      throw new Error('Tidak dapat menyiapkan pengukuran pagination daftar produksi.');
+    }
+
+    const pageRect = page.getBoundingClientRect();
+    const pageStyles = getComputedStyle(page);
+    const contentBottom = pageRect.bottom
+      - Number.parseFloat(pageStyles.borderBottomWidth || '0')
+      - Number.parseFloat(pageStyles.paddingBottom || '0');
+    const groupGap = 12;
+    const availableHeight = contentBottom - pageHeader.getBoundingClientRect().bottom - groupGap - 8;
+    const measurements = productionGroups.map((group, groupIndex) => {
+      const element = page.querySelector<HTMLElement>(`[data-production-group="${groupIndex}"]`);
+      if (!element) throw new Error(`Tidak dapat mengukur kelompok ukuran ${group.size}.`);
+
+      const rows = Array.from(element.querySelectorAll<HTMLElement>('[data-production-row]'));
+      const rowHeights = rows.map(row => row.getBoundingClientRect().height);
+      const styles = getComputedStyle(element);
+      const marginBottom = Number.parseFloat(styles.marginBottom || '0');
+      const measuredHeight = element.getBoundingClientRect().height + marginBottom;
+      const headerHeight = measuredHeight - rowHeights.reduce((total, height) => total + height, 0);
+
+      return {
+        groupHeight: measuredHeight,
+        headerHeight,
+        rowHeights,
+      };
+    });
+
+    setMeasuredProductionPagination({
+      key: paginationKey,
+      pages: paginateProductionGroups(measurements, availableHeight),
+    });
+  }, [measuredProductionPagination?.key, paginationKey, productionGroups]);
 
   // Primary design visual
   const primaryDesign = designs.length > 0 ? designs[0] : null;
 
   return (
-    <div ref={paginationRoot} className={`print-document ${mode === 'preview' ? 'order-document-preview w-[794px] max-w-none mx-0 text-black' : 'w-full'}`}>
+    <div
+      ref={paginationRoot}
+      data-pagination-ready={isPaginationReady ? 'true' : 'false'}
+      className={`print-document ${mode === 'preview' ? 'order-document-preview w-[794px] max-w-none mx-0 text-black' : 'w-full'}`}
+    >
       {/* ========================================================= */}
       {/* PAGE 1: FORM ORDER SUBLIME TIKET PRODUKSI UTAMA */}
       {/* ========================================================= */}
-      <div className={`print-page bg-white text-black font-sans leading-tight border-2 border-black p-5 sm:p-6 mb-6 shadow-sm ${mode === 'print' ? 'shadow-none !border-2 !border-black' : 'rounded-lg'}`}>
+      <div style={PRINT_PAGE_STYLE} className={`print-page bg-white text-black font-sans leading-tight border-2 border-black p-5 sm:p-6 mb-6 shadow-sm ${mode === 'print' ? 'shadow-none !border-2 !border-black' : 'rounded-lg'}`}>
         {/* Document Header */}
         <div className="flex items-center justify-between pb-2.5">
           <div className="w-16 hidden sm:block"></div>
@@ -121,6 +392,25 @@ export const OrderPrintDocument: React.FC<OrderPrintDocumentProps> = ({
           </div>
         </div>
 
+        <section className="border-x-2 border-b-2 border-black bg-neutral-50 px-3 py-2.5">
+          <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+            <h2 className="text-[11px] font-black uppercase tracking-wide">REKAPITULASI UKURAN</h2>
+            <span className="font-mono text-[11px] font-black">TOTAL {totalDisplayQty} PCS</span>
+          </div>
+          {order.printFilterSizes?.length ? (
+            <p className="mb-1 text-[9px] font-bold uppercase text-[#D71920]">
+              Dokumen menggunakan filter ukuran: {order.printFilterSizes.join(', ')}
+            </p>
+          ) : null}
+          <div className="flex flex-wrap gap-1.5">
+            {sizeRecap.length ? sizeRecap.map(item => (
+              <span key={item.size} className="border border-neutral-400 bg-white px-2 py-1 text-[10px] font-bold">
+                {item.size}: {item.quantity} PCS
+              </span>
+            )) : <span className="text-[10px] text-neutral-500">Belum ada data ukuran</span>}
+          </div>
+        </section>
+
         {/* Middle Section: Artwork (Left) vs Production Notes (Right) */}
         <div className="border-x-2 border-b-2 border-black grid grid-cols-12 min-h-[300px]">
           {/* Left Column: Artwork Gallery */}
@@ -134,10 +424,11 @@ export const OrderPrintDocument: React.FC<OrderPrintDocumentProps> = ({
             <div className="flex-1 flex flex-col items-center justify-center min-h-[220px] p-1">
               {primaryDesign ? (
                 <div className="w-full flex flex-col items-center gap-2">
-                  <div className="w-full max-h-[240px] flex items-center justify-center">
+                  <div className="w-full max-h-[240px] flex items-center justify-center overflow-hidden">
                     <img
                       src={primaryDesign.dataUrl}
                       alt={primaryDesign.label}
+                      style={{ maxWidth: '100%', maxHeight: '230px', width: 'auto', height: 'auto', objectFit: 'contain' }}
                       className="max-h-[230px] w-auto max-w-full object-contain opacity-100 filter-none mix-blend-normal"
                     />
                   </div>
@@ -148,6 +439,7 @@ export const OrderPrintDocument: React.FC<OrderPrintDocumentProps> = ({
                           <img
                             src={d.dataUrl}
                             alt={d.label}
+                            style={{ maxWidth: '100%', maxHeight: '56px', width: 'auto', height: 'auto', objectFit: 'contain' }}
                             className="h-full w-full object-contain opacity-100 filter-none mix-blend-normal"
                           />
                         </div>
@@ -168,17 +460,17 @@ export const OrderPrintDocument: React.FC<OrderPrintDocumentProps> = ({
           </div>
 
           {/* Right Column: Production Notes in Bold Red */}
-          <div className="col-span-5 p-3.5 sm:p-4 flex flex-col justify-between bg-white">
+          <div className="col-span-5 min-w-0 p-3.5 sm:p-4 flex flex-col justify-between bg-white">
             <div className="space-y-2 text-xs sm:text-sm font-black tracking-wide leading-relaxed">
-              {hasRosterPages && (
+              {(hasRosterPages || hasSizeQuantityPages) && (
                 <div className="text-[#D71920] font-black uppercase text-sm border-b-2 border-red-300 pb-1 mb-2">
                   DATA TERPISAH DI HALAMAN BELAKANG
                 </div>
               )}
 
-              {notes ? (
-                <div className="whitespace-pre-line text-[#D71920] font-black uppercase">
-                  {notes}
+              {notePages[0] ? (
+                <div className="whitespace-pre-line break-words [overflow-wrap:anywhere] text-[#D71920] font-black uppercase">
+                  {notePages[0]}
                 </div>
               ) : (
                 <div className="whitespace-pre-line text-[#D71920] font-black uppercase">-</div>
@@ -265,11 +557,12 @@ export const OrderPrintDocument: React.FC<OrderPrintDocumentProps> = ({
               </div>
 
               {/* Collar Mockup Image - Sized clearly for sewing operators */}
-              <div className="w-full min-h-28 flex items-center justify-center p-1.5 bg-neutral-50 rounded border border-neutral-400">
+              <div className="w-full h-28 flex items-center justify-center overflow-hidden p-1.5 bg-neutral-50 rounded border border-neutral-400">
                 {collar?.imageUrl ? (
                   <img
                     src={collar.imageUrl}
                     alt={collar.modelName || 'Model Kerah'}
+                    style={{ maxWidth: '100%', maxHeight: '100%', width: 'auto', height: 'auto', objectFit: 'contain' }}
                     className="max-h-full max-w-full object-contain"
                     onError={(e) => {
                       const img = e.currentTarget;
@@ -344,18 +637,42 @@ export const OrderPrintDocument: React.FC<OrderPrintDocumentProps> = ({
             </div>
           </div>
         </div>
+        {!hasRosterPages && !hasSizeQuantityPages && (
+          <div className="mt-2 border-t border-black pt-2 text-[10px] font-bold uppercase font-mono">
+            TOTAL ORDER: {totalDisplayQty} PCS · STATUS DATA: BELUM ADA ROSTER PEMAIN
+          </div>
+        )}
       </div>
-      {!hasRosterPages && (
-        <div className="border-2 border-black p-3 bg-neutral-100 flex flex-col sm:flex-row items-center justify-between text-xs font-bold uppercase font-mono gap-2">
-          <span>TOTAL ORDER: <strong>{totalDisplayQty} PCS</strong></span>
-          <span className="text-neutral-700">STATUS DATA: BELUM ADA ROSTER PEMAIN</span>
+
+      {continuedNotePages.map((chunks, index) => (
+        <div
+          key={`notes-page-${index}`}
+          style={PRINT_PAGE_STYLE}
+          className={`print-page bg-white text-black font-sans leading-tight border-2 border-black p-5 sm:p-6 mb-6 shadow-sm ${mode === 'print' ? 'shadow-none !border-2 !border-black' : 'rounded-lg'}`}
+        >
+          <div className="mb-4 flex items-center justify-between border-b-2 border-black pb-2">
+            <div>
+              <h2 className="text-xl font-black uppercase">FORM ORDER SUBLIME — LANJUTAN KETERANGAN</h2>
+              <p className="mt-0.5 text-xs font-bold uppercase tracking-wide text-neutral-700">
+                Order #{customer.orderNumber || '-'} · {customer.name || '-'}
+              </p>
+            </div>
+            <span className="border border-black bg-neutral-100 px-2.5 py-1 font-mono text-xs font-bold">
+              Halaman {index + 2} dari {totalPages}
+            </span>
+          </div>
+          <div className="space-y-3 break-words [overflow-wrap:anywhere] text-sm font-bold uppercase leading-relaxed">
+            {chunks.map((chunk, chunkIndex) => (
+              <p key={chunkIndex} className="whitespace-pre-wrap">{chunk}</p>
+            ))}
+          </div>
         </div>
-      )}
+      ))}
 
       {/* ========================================================= */}
       {/* PAGE 2+: DETAIL NAMA, NO PUNGGUNG & UKURAN (REPEAT HEADERS) */}
       {/* ========================================================= */}
-      {hasRosterPages &&
+      {false && hasRosterPages &&
         playerChunks.map((chunk, chunkIdx) => {
           const pageNum = chunkIdx + 2;
           const isLastRosterPage = chunkIdx === playerChunks.length - 1;
@@ -363,6 +680,7 @@ export const OrderPrintDocument: React.FC<OrderPrintDocumentProps> = ({
           return (
             <div
               key={`roster-page-${chunkIdx}`}
+              style={PRINT_PAGE_STYLE}
               className={`print-page bg-white text-black font-sans leading-tight border-2 border-black p-5 sm:p-6 mb-6 shadow-sm ${
                 mode === 'print' ? 'shadow-none !border-2 !border-black' : 'rounded-lg'
               }`}
@@ -379,7 +697,7 @@ export const OrderPrintDocument: React.FC<OrderPrintDocumentProps> = ({
                 </div>
                 <div className="text-right">
                   <span className="font-mono text-xs font-bold bg-neutral-100 border border-black px-2.5 py-1 rounded">
-                    Halaman {pageNum} dari {totalPages}
+                    Halaman {pageNum + continuedNotePages.length} dari {totalPages}
                   </span>
                 </div>
               </div>
@@ -410,12 +728,11 @@ export const OrderPrintDocument: React.FC<OrderPrintDocumentProps> = ({
                   <thead>
                     <tr className="bg-black text-white font-black text-[11px] uppercase tracking-wider">
                     <th style={{ width: '6%' }} className="py-2 px-1 text-center border-r border-neutral-700">No</th>
-                    <th style={{ width: '25%' }} className="py-2 px-2 border-r border-neutral-700">Nama Pemain</th>
-                    <th style={{ width: '12%' }} className="py-2 px-1 text-center border-r border-neutral-700">No. Punggung</th>
-                    <th style={{ width: '10%' }} className="py-2 px-1 text-center border-r border-neutral-700">Ukuran</th>
-                    <th style={{ width: '7%' }} className="py-2 px-1 text-center border-r border-neutral-700">Qty</th>
-                    <th style={{ width: '14%' }} className="py-2 px-1 text-center border-r border-neutral-700">Lengan</th>
-                    <th style={{ width: '26%' }} className="py-2 px-2">Catatan Khusus</th>
+                    <th style={{ width: '30%' }} className="py-2 px-2 border-r border-neutral-700">Nama Pemain</th>
+                    <th style={{ width: '14%' }} className="py-2 px-1 text-center border-r border-neutral-700">No. Punggung</th>
+                    <th style={{ width: '12%' }} className="py-2 px-1 text-center border-r border-neutral-700">Ukuran</th>
+                    <th style={{ width: '16%' }} className="py-2 px-1 text-center border-r border-neutral-700">Lengan</th>
+                    <th style={{ width: '22%' }} className="py-2 px-2">Catatan Khusus</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y border-t border-black divide-neutral-300">
@@ -438,9 +755,6 @@ export const OrderPrintDocument: React.FC<OrderPrintDocumentProps> = ({
                           </td>
                           <td className="py-1.5 px-1 text-center font-black text-[#D71920] border-r border-neutral-300 text-xs break-words align-top">
                             {p.size || '-'}
-                          </td>
-                          <td className="py-1.5 px-1 text-center font-mono font-bold border-r border-neutral-300 text-xs align-top">
-                            {p.quantity}
                           </td>
                           <td className="py-1.5 px-1 text-center text-neutral-700 text-[10px] break-words [overflow-wrap:anywhere] border-r border-neutral-300 align-top">
                             {sleeve || '-'}
@@ -478,6 +792,155 @@ export const OrderPrintDocument: React.FC<OrderPrintDocumentProps> = ({
             </div>
           );
         })}
+      {false && hasSizeQuantityPages && sizeRecapPages.map((pageItems, pageIndex) => (
+        <div
+          key={`size-page-${pageIndex}`}
+          style={PRINT_PAGE_STYLE}
+          className={`print-page bg-white text-black font-sans leading-tight border-2 border-black p-5 sm:p-6 mb-6 shadow-sm ${mode === 'print' ? 'shadow-none !border-2 !border-black' : 'rounded-lg'}`}
+        >
+          <div className="mb-3 flex items-center justify-between border-b-2 border-black pb-2">
+            <div>
+              <h2 className="text-xl font-black uppercase">FORM ORDER SUBLIME — DETAIL UKURAN</h2>
+              <p className="mt-0.5 text-xs font-bold uppercase tracking-wide text-neutral-700">Rekap jumlah jersey tanpa roster pemain</p>
+            </div>
+            <span className="border border-black bg-neutral-100 px-2.5 py-1 font-mono text-xs font-bold">
+              Halaman {2 + continuedNotePages.length + pageIndex} dari {totalPages}
+            </span>
+          </div>
+          <div className="mb-3 grid grid-cols-12 border-2 border-black bg-neutral-100 text-xs font-bold uppercase">
+            <div className="col-span-6 border-r border-black p-2">NO. ORDER: {customer.orderNumber || '-'}</div>
+            <div className="col-span-6 p-2">PEMESAN: {customer.name || '-'}</div>
+          </div>
+          {order.printFilterSizes?.length ? (
+            <p className="mb-2 border border-red-300 bg-red-50 p-2 text-xs font-bold uppercase text-[#D71920]">
+              Dokumen menggunakan filter ukuran: {order.printFilterSizes.join(', ')}
+            </p>
+          ) : null}
+          <div className="border-2 border-black">
+            <table className="w-full border-collapse text-left text-xs">
+              <thead>
+                <tr className="bg-black text-[11px] font-black uppercase tracking-wide text-white">
+                  <th className="w-16 border-r border-neutral-700 px-2 py-2 text-center">No</th>
+                  <th className="border-r border-neutral-700 px-3 py-2">Ukuran</th>
+                  <th className="w-40 px-3 py-2 text-right">Jumlah PCS</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-neutral-300">
+                {pageItems.map((item, index) => (
+                  <tr key={item.size} className={index % 2 ? 'bg-neutral-50' : 'bg-white'}>
+                    <td className="border-r border-neutral-300 px-2 py-2 text-center font-mono">{pageIndex * 24 + index + 1}</td>
+                    <td className="border-r border-neutral-300 px-3 py-2 font-bold">{item.size}</td>
+                    <td className="px-3 py-2 text-right font-mono font-bold">{item.quantity}</td>
+                  </tr>
+                ))}
+              </tbody>
+              {pageIndex === sizeRecapPages.length - 1 && (
+                <tfoot>
+                  <tr className="border-t-2 border-black bg-neutral-100 font-black">
+                    <td colSpan={2} className="px-3 py-2 text-right uppercase">Total PCS</td>
+                    <td className="px-3 py-2 text-right font-mono">{totalDisplayQty}</td>
+                  </tr>
+                </tfoot>
+              )}
+            </table>
+          </div>
+          {pageIndex === sizeRecapPages.length - 1 && (
+            <div className="mt-4 border-2 border-black bg-neutral-100 p-3 text-right font-mono text-sm font-black uppercase">
+              Total order: {totalDisplayQty} PCS
+            </div>
+          )}
+        </div>
+      ))}
+
+      {productionPages.map((pageGroups, pageIndex) => (
+        <div
+          key={`production-page-${pageIndex}`}
+          data-last-print-page={pageIndex === productionPages.length - 1 ? 'true' : undefined}
+          style={PRINT_PAGE_STYLE}
+          className={`print-page bg-white text-black font-sans leading-tight border-2 border-black p-5 sm:p-6 mb-6 shadow-sm ${mode === 'print' ? 'shadow-none !border-2 !border-black' : 'rounded-lg'}`}
+        >
+          <ProductionPageHeader
+            orderNumber={customer.orderNumber || '-'}
+            customerName={customer.name}
+            pageNumber={productionStartPageNumber + pageIndex}
+            totalPages={totalPages}
+            filterSizes={order.printFilterSizes}
+            groups={productionGroups}
+            totalQuantity={totalDisplayQty}
+            showRecap={pageIndex === 0}
+          />
+          <div className="mt-3">
+            {pageGroups.length ? pageGroups.map(({ groupIndex, startIndex, endIndex }) => {
+              const group = productionGroups[groupIndex];
+              return (
+                <ProductionGroupBlock
+                  key={`${group.size}-${startIndex}`}
+                  size={group.size}
+                  quantity={group.quantity}
+                  players={group.players}
+                  groupIndex={groupIndex}
+                  startIndex={startIndex}
+                  endIndex={endIndex}
+                  isRoster={inputMode === 'roster'}
+                  continued={startIndex > 0}
+                  defaultSleeve={product.sleeve}
+                />
+              );
+            }) : (
+              <div className="border-2 border-dashed border-neutral-400 p-4 text-center text-sm font-bold uppercase text-neutral-500">
+                Data ukuran belum tersedia untuk dikelompokkan.
+              </div>
+            )}
+          </div>
+        </div>
+      ))}
+
+      {productionGroups.length > 0 && (
+        <div
+          aria-hidden="true"
+          style={{
+            position: 'absolute',
+            left: '-100000px',
+            top: 0,
+            width: '794px',
+            visibility: 'hidden',
+            pointerEvents: 'none',
+          }}
+        >
+          <div
+            data-production-measure-page
+            style={{ ...PRINT_PAGE_STYLE, margin: 0 }}
+            className="bg-white text-black font-sans leading-tight border-2 border-black"
+          >
+            <ProductionPageHeader
+              orderNumber={customer.orderNumber || '-'}
+              customerName={customer.name}
+              pageNumber={1}
+              totalPages={totalPages}
+              filterSizes={order.printFilterSizes}
+              groups={productionGroups}
+              totalQuantity={totalDisplayQty}
+              showRecap
+            />
+            <div className="mt-3">
+              {productionGroups.map((group, groupIndex) => (
+                <ProductionGroupBlock
+                  key={group.size}
+                  size={group.size}
+                  quantity={group.quantity}
+                  players={group.players}
+                  groupIndex={groupIndex}
+                  startIndex={0}
+                  endIndex={group.players.length}
+                  isRoster={inputMode === 'roster'}
+                  continued={false}
+                  defaultSleeve={product.sleeve}
+                />
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

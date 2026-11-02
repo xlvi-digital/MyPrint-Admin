@@ -1,7 +1,8 @@
 import React, { useState, useMemo } from 'react';
-import { Order } from '../types/order';
+import { Order, STANDARD_SIZES } from '../types/order';
 import { Search, Users, Download, Eye, ExternalLink } from 'lucide-react';
 import { displaySpecialNote } from '../utils/rosterData';
+import { resolveOrderInputMode } from '../utils/orderSizing';
 
 interface PlayerRosterRecapProps {
   orders: Order[];
@@ -21,7 +22,6 @@ export const PlayerRosterRecap: React.FC<PlayerRosterRecapProps> = ({
       orderId: string;
       orderNumber: string;
       customerName: string;
-      teamName?: string;
       material: string;
       name: string;
       number: string;
@@ -32,13 +32,12 @@ export const PlayerRosterRecap: React.FC<PlayerRosterRecapProps> = ({
     }[] = [];
 
     for (const o of orders) {
-      if (o.players && o.players.length > 0) {
+      if (resolveOrderInputMode(o.inputMode, o.players || []) === 'roster' && o.players && o.players.length > 0) {
         for (const p of o.players) {
           list.push({
             orderId: o.id,
             orderNumber: o.orderNumber,
             customerName: o.customer.name,
-            teamName: o.customer.teamName,
             material: o.product.material,
             name: p.name || 'TANPA NAMA',
             number: p.number || '-',
@@ -61,17 +60,15 @@ export const PlayerRosterRecap: React.FC<PlayerRosterRecapProps> = ({
       r.name.toLowerCase().includes(q) ||
       r.number.toLowerCase().includes(q) ||
       r.orderNumber.toLowerCase().includes(q) ||
-      r.customerName.toLowerCase().includes(q) ||
-      (r.teamName || '').toLowerCase().includes(q)
+      r.customerName.toLowerCase().includes(q)
     );
   });
 
   const handleExportCsv = () => {
-    const headers = ['No Order', 'Pemesan', 'Tim', 'Nama Pemain', 'No Punggung', 'Ukuran', 'Qty', 'Jenis Lengan', 'Catatan'];
+    const headers = ['No Order', 'Pemesan', 'Nama Pemain', 'No Punggung', 'Ukuran', 'Qty', 'Jenis Lengan', 'Catatan'];
     const rows = filtered.map(r => [
       `"${r.orderNumber}"`,
       `"${r.customerName}"`,
-      `"${r.teamName || ''}"`,
       `"${r.name}"`,
       `"${r.number}"`,
       `"${r.size}"`,
@@ -137,7 +134,12 @@ export const PlayerRosterRecap: React.FC<PlayerRosterRecapProps> = ({
           className="px-3 py-2 bg-neutral-100 rounded-xl text-xs font-bold text-neutral-800 outline-none cursor-pointer w-full sm:w-auto"
         >
           <option value="ALL">Semua Ukuran ({allRows.length} Baris)</option>
-          {['XS', 'S', 'M', 'L', 'XL', 'XXL', '3XL', '4XL'].map(s => (
+          {[...new Set(allRows.map(row => row.size))].sort((a, b) => {
+            const aIndex = STANDARD_SIZES.indexOf(a);
+            const bIndex = STANDARD_SIZES.indexOf(b);
+            if (aIndex !== -1 || bIndex !== -1) return (aIndex === -1 ? 999 : aIndex) - (bIndex === -1 ? 999 : bIndex);
+            return a.localeCompare(b);
+          }).map(s => (
             <option key={s} value={s}>
               Ukuran {s}
             </option>
@@ -157,7 +159,7 @@ export const PlayerRosterRecap: React.FC<PlayerRosterRecapProps> = ({
                 <th className="py-3 px-4 w-24 text-center">Ukuran</th>
                 <th className="py-3 px-4 w-16 text-center">Qty</th>
                 <th className="py-3 px-4 w-28 text-center">Jenis Lengan</th>
-                <th className="py-3 px-4">Pemesan / Tim</th>
+                <th className="py-3 px-4">Pemesan</th>
                 <th className="py-3 px-4">Bahan Kain</th>
                 <th className="py-3 px-4">Catatan Khusus</th>
                 <th className="py-3 px-4 text-right">Aksi</th>
@@ -192,7 +194,7 @@ export const PlayerRosterRecap: React.FC<PlayerRosterRecapProps> = ({
                       {row.sleeve}
                     </td>
                     <td className="py-2.5 px-4 font-sans font-semibold text-neutral-700">
-                      {row.customerName} {row.teamName ? `(${row.teamName})` : ''}
+                      {row.customerName}
                     </td>
                     <td className="py-2.5 px-4 font-sans text-neutral-600">
                       {row.material}

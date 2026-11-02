@@ -22,7 +22,7 @@ export const ProductForm: React.FC<ProductFormProps> = ({
   const masterData = useMasterData();
 
   const updateNumeric = (
-    field: 'totalQuantity' | 'unitPrice' | 'downPayment',
+    field: 'unitPrice' | 'downPayment',
     val: number
   ) => {
     const updated = {
@@ -31,7 +31,7 @@ export const ProductForm: React.FC<ProductFormProps> = ({
     };
 
     // Recalculate totals
-    const qty = field === 'totalQuantity' ? val : product.totalQuantity;
+    const qty = product.totalQuantity;
     const price = field === 'unitPrice' ? val : product.unitPrice;
     const dp = field === 'downPayment' ? val : product.downPayment;
 
@@ -243,22 +243,6 @@ export const ProductForm: React.FC<ProductFormProps> = ({
         </h3>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 p-4 rounded-xl bg-neutral-50/70 border border-neutral-200/60">
-          {/* Jumlah Total Pcs */}
-          <div>
-            <label className="block text-xs font-semibold text-neutral-700 mb-1">
-              Jumlah Total (Pcs) <span className="text-[#D71920]">*</span>
-            </label>
-            <input
-              type="number"
-              min="1"
-              value={product.totalQuantity || ''}
-              onChange={e => updateNumeric('totalQuantity', Math.max(0, parseInt(e.target.value) || 0))}
-              placeholder="76"
-              className="w-full px-3 py-2 text-xs rounded-xl border border-neutral-200 focus:border-neutral-400 bg-white outline-none font-mono font-bold text-neutral-900"
-            />
-            <p className="text-[10px] text-neutral-400 mt-1">Disinkronkan dengan data pemain</p>
-          </div>
-
           {/* Harga Satuan */}
           <div>
             <label className="block text-xs font-semibold text-neutral-700 mb-1">
@@ -287,9 +271,7 @@ export const ProductForm: React.FC<ProductFormProps> = ({
               <span>{formatRupiah(product.totalPrice)}</span>
               <span className="text-[10px] text-neutral-500 font-sans font-normal">Otomatis</span>
             </div>
-            <p className="text-[10px] text-neutral-400 mt-1">
-              {product.totalQuantity} pcs × {formatRupiah(product.unitPrice)}
-            </p>
+            <p className="text-[10px] text-neutral-400 mt-1">{product.totalQuantity} pcs × {formatRupiah(product.unitPrice)}</p>
           </div>
 
           {/* DP / Uang Muka */}

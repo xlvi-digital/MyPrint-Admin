@@ -1,4 +1,5 @@
 import { getSupabaseClient, isSupabaseConfigured } from './client';
+import { STANDARD_SIZES } from '../../types/order';
 
 export type MasterDataCategory = 'materials' | 'jersey_sizes' | 'product_types' | 'collar_models';
 
@@ -63,7 +64,19 @@ export const masterDataService = {
         const sortColumn = category === 'jersey_sizes' ? 'code' : 'name';
         const { data, error } = await client.from(category).select('*').order(sortColumn, { ascending: true });
         if (error) throwDatabaseError(`Gagal membaca data ${category}`, error);
-        return [category, (data || []).map((row: Record<string, unknown>) => mapEntry(row))] as const;
+        const entries = (data || []).map((row: Record<string, unknown>) => mapEntry(row));
+        if (category === 'jersey_sizes') {
+          entries.sort((left, right) => {
+            const leftIndex = STANDARD_SIZES.indexOf(left.code || left.name);
+            const rightIndex = STANDARD_SIZES.indexOf(right.code || right.name);
+            if (leftIndex !== -1 || rightIndex !== -1) {
+              return (leftIndex === -1 ? Number.MAX_SAFE_INTEGER : leftIndex)
+                - (rightIndex === -1 ? Number.MAX_SAFE_INTEGER : rightIndex);
+            }
+            return left.name.localeCompare(right.name);
+          });
+        }
+        return [category, entries] as const;
       }));
       cachedMasterData = Object.fromEntries(results) as Record<MasterDataCategory, MasterDataEntry[]>;
       return cachedMasterData;

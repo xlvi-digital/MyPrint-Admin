@@ -19,6 +19,9 @@ export function paginateRosterPlayersByHeight(
     if (!Number.isFinite(rowHeight) || rowHeight <= 0) {
       throw new Error(`Tidak dapat mengukur tinggi baris roster pemain ${index + 1}.`);
     }
+    if (rowHeight > availableHeight) {
+      throw new Error(`Catatan atau isi roster baris ${index + 1} lebih tinggi dari area cetak satu halaman A4.`);
+    }
 
     if (currentPage.length > 0 && currentPageHeight + rowHeight > availableHeight) {
       pages.push(currentPage);
@@ -45,33 +48,47 @@ export function measureRosterPages(
   let sharedPageContentHeight = 0;
   let footerHeight = 0;
   let measuredRows = 0;
+  let availablePageHeight = 0;
 
   detailPages.forEach(page => {
     const rows = Array.from(page.querySelectorAll<HTMLTableRowElement>('tbody tr[data-roster-index]'));
-    const pageRowHeight = rows.reduce((height, row) => {
+    rows.forEach(row => {
       const index = Number(row.dataset.rosterIndex);
       const rowHeight = row.getBoundingClientRect().height;
       rowHeights[index] = rowHeight;
       measuredRows += 1;
-      return height + rowHeight;
-    }, 0);
+    });
     const measuredFooterHeight = page.querySelector<HTMLElement>('.roster-footer')?.getBoundingClientRect().height || 0;
     footerHeight = Math.max(footerHeight, measuredFooterHeight);
-    sharedPageContentHeight = Math.max(
-      sharedPageContentHeight,
-      page.getBoundingClientRect().height - pageRowHeight - measuredFooterHeight
-    );
+    const firstRow = rows[0];
+    if (firstRow) {
+      const pageRect = page.getBoundingClientRect();
+      const firstRowTop = firstRow.getBoundingClientRect().top;
+      const styles = getComputedStyle(page);
+      const pageContentTop = pageRect.top
+        + Number.parseFloat(styles.borderTopWidth || '0')
+        + Number.parseFloat(styles.paddingTop || '0');
+      sharedPageContentHeight = Math.max(sharedPageContentHeight, firstRowTop - pageContentTop);
+
+      const pageContentBottom = pageRect.bottom
+        - Number.parseFloat(styles.borderBottomWidth || '0')
+        - Number.parseFloat(styles.paddingBottom || '0');
+      availablePageHeight = Math.max(availablePageHeight, pageContentBottom - pageContentTop);
+    }
   });
 
   if (measuredRows !== players.length || rowHeights.some(height => !Number.isFinite(height) || height <= 0)) {
     throw new Error('Tidak dapat mengukur seluruh baris roster untuk pagination PDF.');
   }
 
-  const pageWidth = detailPages[0].getBoundingClientRect().width;
-  const a4Height = pageWidth * 297 / 210;
-  const availableRowHeight = a4Height - sharedPageContentHeight - footerHeight - 18;
+  const availableRowHeight = availablePageHeight - sharedPageContentHeight - footerHeight - 12;
   if (availableRowHeight <= 0) {
     throw new Error('Header roster dan footer tidak menyisakan ruang untuk data pemain pada halaman A4.');
+  }
+
+  const oversizedRow = rowHeights.findIndex(height => height > availableRowHeight);
+  if (oversizedRow !== -1) {
+    throw new Error(`Catatan atau isi roster baris ${oversizedRow + 1} lebih tinggi dari area cetak satu halaman A4.`);
   }
 
   return paginateRosterPlayersByHeight(players, rowHeights, availableRowHeight);

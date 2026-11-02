@@ -81,10 +81,17 @@ export interface Order {
   externalOrderNumber?: string;
   customer: Customer;
   product: Product;
+  inputMode?: 'roster' | 'size-quantity';
   players: PlayerDetail[];
+  printFilterSizes?: string[];
   useTableThreshold: number; // default 5 rows
   printingMachines: PrintingMachine[];
   designs: DesignAsset[];
+  features?: {
+    designs?: boolean;
+    collarRib?: boolean;
+    notes?: boolean;
+  };
   collar: CollarSpec;
   notes: string;
   productionStatus: ProductionStatus;
@@ -140,7 +147,8 @@ export const COMMON_COLLARS = [
   'CUSTOM',
 ];
 
-export const STANDARD_SIZES = ['XS', 'S', 'M', 'L', 'XL', 'XXL', '3XL', '4XL', 'Custom'];
+export const CHILD_SIZES = ['2A', '4A', '6A', '8A', '10A', '12A', '14A', '16A'];
+export const STANDARD_SIZES = [...CHILD_SIZES, 'XS', 'S', 'M', 'L', 'XL', 'XXL', '3XL', '4XL', 'Custom'];
 
 export interface WhatsAppParseResult {
   customerName?: string;

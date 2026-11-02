@@ -4,8 +4,11 @@ import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
 import { Order } from '../types/order';
 import { OrderPrintDocument } from '../components/print/OrderPrintDocument';
-import { normalizeRoster } from '../utils/rosterData';
 
+const A4_PAGE_WIDTH_PX = 794;
+const A4_PAGE_HEIGHT_PX = 1123;
+const A4_PAGE_WIDTH_MM = 210;
+const A4_PAGE_HEIGHT_MM = 297;
 const MODERN_COLOR_FUNCTION = /\b(?:oklch|oklab|lch|lab|color)\([^)]*\)/gi;
 
 function normalizeModernColors(documentClone: Document, containerId: string) {
@@ -63,7 +66,10 @@ function waitForImage(image: HTMLImageElement): Promise<void> {
   const imageName = image.alt || 'gambar Form Order';
   const fail = () => new Error(`Gagal memuat ${imageName} sebelum PDF dibuat.`);
   if (image.complete) {
-    return image.naturalWidth > 0 ? Promise.resolve() : Promise.reject(fail());
+    if (image.naturalWidth <= 0) return Promise.reject(fail());
+    return image.decode().catch(() => {
+      throw fail();
+    });
   }
 
   return new Promise<void>((resolve, reject) => {
@@ -76,9 +82,18 @@ function waitForImage(image: HTMLImageElement): Promise<void> {
       image.removeEventListener('load', onLoad);
       image.removeEventListener('error', onError);
     };
-    const onLoad = () => {
+    const onLoad = async () => {
       cleanup();
-      image.naturalWidth > 0 ? resolve() : reject(fail());
+      if (image.naturalWidth <= 0) {
+        reject(fail());
+        return;
+      }
+      try {
+        await image.decode();
+        resolve();
+      } catch {
+        reject(fail());
+      }
     };
     const onError = () => {
       cleanup();
@@ -93,17 +108,31 @@ function waitForImage(image: HTMLImageElement): Promise<void> {
 
 async function renderOrderDocument(
   root: Root,
-  order: Order
+  order: Order,
+  container: HTMLElement
 ): Promise<void> {
   root.render(
-    <div style={{ width: '794px', background: '#ffffff' }}>
+    <div style={{ width: `${A4_PAGE_WIDTH_PX}px`, background: '#ffffff' }}>
       <OrderPrintDocument order={order} mode="print" />
     </div>
   );
-  await new Promise<void>(resolve => {
-    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-  });
   await document.fonts.ready;
+
+  const startedAt = Date.now();
+  while (true) {
+    const paginationRoot = container.querySelector<HTMLElement>('[data-pagination-ready]');
+    if (!paginationRoot) {
+      if (Date.now() - startedAt > 10000) {
+        throw new Error('Dokumen order tidak selesai dirender untuk pagination PDF.');
+      }
+    } else if (paginationRoot.dataset.paginationReady === 'true') {
+      break;
+    } else if (Date.now() - startedAt > 10000) {
+      throw new Error('Pagination roster belum selesai sebelum pembuatan PDF.');
+    }
+
+    await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+  }
 }
 
 /**
@@ -194,7 +223,7 @@ export async function generateOrderPdf(order: Order): Promise<PdfGenerationResul
 
   const clonedOrder: Order = {
     ...order,
-    players: normalizeRoster(order.players || []),
+    players: order.players || [],
     collar: {
       ...order.collar,
       imageUrl: collarImageUrl,
@@ -208,7 +237,7 @@ export async function generateOrderPdf(order: Order): Promise<PdfGenerationResul
   container.style.position = 'fixed';
   container.style.left = '-99999px';
   container.style.top = '0';
-  container.style.width = '794px';
+  container.style.width = `${A4_PAGE_WIDTH_PX}px`;
   container.style.backgroundColor = '#ffffff';
   container.style.zIndex = '-99999';
   container.style.pointerEvents = 'none';
@@ -220,25 +249,31 @@ export async function generateOrderPdf(order: Order): Promise<PdfGenerationResul
     // 3. Render OrderPrintDocument with mode="print" into offscreen container
     const pdfRoot = createRoot(container);
     root = pdfRoot;
-    await renderOrderDocument(pdfRoot, clonedOrder);
+    await renderOrderDocument(pdfRoot, clonedOrder, container);
 
     // 4. Ensure all images inside container are decoded and loaded
     const imgElements = Array.from(container.querySelectorAll('img'));
     await Promise.all(imgElements.map(waitForImage));
 
-    // Minor pause for final layout calculation
-    await new Promise((r) => setTimeout(r, 100));
+    await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
 
-    // 5. Select all .print-page elements
-    const pageElements = Array.from(container.querySelectorAll<HTMLElement>('.print-page'));
-    const targetsToCapture = pageElements.length > 0 ? pageElements : [container];
-    const maximumPageHeight = 794 * 297 / 210;
+    // Capture only actual document pages, never the surrounding renderer or measurement helpers.
+    const targetsToCapture = Array.from(
+      container.querySelectorAll<HTMLElement>('.print-document > .print-page'),
+    );
+    if (targetsToCapture.length === 0) {
+      throw new Error('Dokumen PDF tidak memiliki halaman Form Order yang dapat dicetak.');
+    }
     targetsToCapture.forEach((page, index) => {
       if (page.scrollWidth > page.clientWidth + 1) {
         throw new Error(`Konten halaman ${index + 1} melewati lebar A4.`);
       }
-      if (page.getBoundingClientRect().height > maximumPageHeight) {
-        throw new Error(`Konten halaman ${index + 1} melebihi tinggi halaman A4.`);
+      if (Math.abs(page.getBoundingClientRect().width - A4_PAGE_WIDTH_PX) > 1
+        || Math.abs(page.getBoundingClientRect().height - A4_PAGE_HEIGHT_PX) > 1) {
+        throw new Error(`Ukuran frame halaman ${index + 1} tidak sesuai ukuran A4.`);
+      }
+      if (page.scrollHeight > page.clientHeight + 1) {
+        throw new Error(`Konten halaman ${index + 1} melebihi area cetak A4 dan tidak akan dipotong.`);
       }
     });
 
@@ -254,25 +289,27 @@ export async function generateOrderPdf(order: Order): Promise<PdfGenerationResul
       const pageEl = targetsToCapture[i];
 
       const canvas = await html2canvas(pageEl, {
-        scale: 2, // 2x high-resolution retina output
+        scale: 2,
         useCORS: true,
         allowTaint: true,
         backgroundColor: '#ffffff',
         logging: false,
-        windowWidth: 794,
+        width: A4_PAGE_WIDTH_PX,
+        height: A4_PAGE_HEIGHT_PX,
+        windowWidth: A4_PAGE_WIDTH_PX,
+        windowHeight: A4_PAGE_HEIGHT_PX,
+        scrollX: 0,
+        scrollY: 0,
         onclone: clonedDocument => normalizeModernColors(clonedDocument, container.id),
       });
 
       const imgData = canvas.toDataURL('image/jpeg', 0.96);
-      const pageWidth = 210;
-      const pageHeight = Math.min(297, canvas.height * pageWidth / canvas.width);
-      const top = (297 - pageHeight) / 2;
 
       if (i > 0) {
         pdf.addPage('a4', 'portrait');
       }
 
-      pdf.addImage(imgData, 'JPEG', 0, top, pageWidth, pageHeight, undefined, 'FAST');
+      pdf.addImage(imgData, 'JPEG', 0, 0, A4_PAGE_WIDTH_MM, A4_PAGE_HEIGHT_MM, undefined, 'FAST');
     }
 
     // 7. Save and trigger direct file download
